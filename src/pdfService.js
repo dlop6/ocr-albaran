@@ -1,16 +1,16 @@
-const fs = require('fs');
-const path = require('path');
-const { PDFDocument } = require('pdf-lib');
-const Poppler = require('pdf-poppler');
+const fs = require("fs");
+const path = require("path");
+const { PDFDocument } = require("pdf-lib");
+const Poppler = require("pdf-poppler");
 
 // carga el archivo
 async function loadPdf(input) {
 	if (Buffer.isBuffer(input)) {
 		return await PDFDocument.load(input);
-	} else if (typeof input === 'string') {
+	} else if (typeof input === "string") {
 		return await PDFDocument.load(fs.readFileSync(input));
 	}
-	throw new Error('Invalid PDF input');
+	throw new Error("Invalid PDF input");
 }
 
 // Devuelve el número de páginas del PDF
@@ -26,10 +26,11 @@ async function extractPagesAsImages(pdfPath, outputDir, noPages) {
 		fs.mkdirSync(outputDir);
 	}
 	const options = {
-		format: 'png',
+		format: "png",
 		out_dir: outputDir,
-		out_prefix: path.basename('page'),
-		page: null
+		out_prefix: path.basename("page"),
+		page: null,
+		resolution: 300 // Mejorar resolución
 	};
 	const results = [];
 	for (let i = 1; i <= noPages; i++) {
@@ -49,7 +50,7 @@ function cleanupTempImages(outputDir) {
 	if (fs.existsSync(outputDir)) {
 		const files = fs.readdirSync(outputDir);
 		files.forEach(file => {
-			if (file.endsWith('.png')) {
+			if (file.endsWith(".png")) {
 				fs.unlinkSync(path.join(outputDir, file));
 			}
 		});
@@ -65,10 +66,10 @@ function validatePdf(input) {
 	try {
 		if (Buffer.isBuffer(input)) {
 			PDFDocument.load(input);
-		} else if (typeof input === 'string') {
+		} else if (typeof input === "string") {
 			PDFDocument.load(fs.readFileSync(input));
 		} else {
-			throw new Error('Invalid PDF input');
+			throw new Error("Invalid PDF input");
 		}
 		return true;
 	} catch (err) {
