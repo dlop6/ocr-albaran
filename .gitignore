@@ -1,2 +1,6 @@
 node_modules
 docs
+src/temp_results
+temp.pdf
+temp_pdf_base64.txt
+ocr-albaran-resultados.md

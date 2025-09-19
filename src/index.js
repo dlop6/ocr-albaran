@@ -5,6 +5,7 @@ const path = require("path");
 const pdfService = require("./pdfService");
 const ocrService = require("./ocrService");
 const parser = require("./parser");
+const fieldExtractor = require("./fieldExtractor");
 
 const app = express();
 app.use(bodyParser.json({ limit: "100mb" }));
@@ -33,14 +34,24 @@ app.post("/api/process-pdf", async (req, res) => {
 		const results = [];
 		for (let i = 0; i < imagePaths.length; i++) {
 			const imagePath = imagePaths[i];
-			const ocrText = await ocrService.processPageWithOcr(imagePath);
+			const ocrResult = await ocrService.processPageWithOcr(imagePath);
 			console.log(`--- Página ${i + 1} ---`);
-			console.log("Texto extraído:");
-			console.log(ocrText);
-			const isRelevant = parser.isRelevantPage(ocrText);
-			console.log("¿Es relevante?", isRelevant);
-			if (isRelevant) {
-				results.push({ pageNumber: i + 1, text: ocrText });
+			
+			if (ocrResult) {
+				console.log("Texto extraído:");
+				console.log(ocrResult.text);
+				console.log(`Confianza: ${ocrResult.confidence}%`);
+				console.log(`Ángulo usado: ${ocrResult.angle}°`);
+				console.log("¿Es relevante?", true);
+				
+				results.push({
+					pageNumber: i + 1,
+					text: ocrResult.text,
+					confidence: ocrResult.confidence,
+					angle: ocrResult.angle
+				});
+			} else {
+				console.log("Página no relevante en ningún ángulo");
 			}
 		}
 

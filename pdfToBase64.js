@@ -18,7 +18,7 @@ function pdfToBase64File(pdfPath) {
 }
 
 // Ruta al PDF a convertir (modifica aquí la ruta)
-const pdfPath = "docs/albaran ingles 2.pdf";
+const pdfPath = "docs/albaran español rotado.pdf";
 
 try {
     const txtPath = pdfToBase64File(pdfPath);

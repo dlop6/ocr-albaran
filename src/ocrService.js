@@ -5,20 +5,45 @@ const sharp = require("sharp");
 const { isRelevantPage } = require('./parser');
 
 
-async function applyOcrToImage(imagePath, lang = "spa+eng") {
-    // Preprocesar imagen antes de OCR
+async function applyOcrToImage(imagePath, lang = "spa+eng", numbersOnly = false) {
+    // Preprocesar imagen antes de OCR de forma conservadora
     const ext = path.extname(imagePath);
     const base = path.basename(imagePath, ext);
     const dir = path.dirname(imagePath);
     const preprocessedPath = path.join(dir, `${base}_preprocessed${ext}`);
+    
+    // Preprocesamiento suave: solo resize y sharpen
     await sharp(imagePath)
-        .resize({ width: 2000 }) // Ajusta según calidad original
-        .sharpen()
-        .normalize()
+        .resize({ width: 2000 }) // Resolución moderada
+        .sharpen({ sigma: 1.0 }) // Nitidez suave
+        .normalize() // Normalizar contraste
         .toFile(preprocessedPath);
-    const { data: { text } } = await Tesseract.recognize(imagePath, lang, {
-    });
-    return text;
+    
+    // Configurar Tesseract
+    const options = {
+        logger: m => {
+            if (m.status === 'recognizing text') {
+                console.log(`OCR Progress: ${Math.round(m.progress * 100)}%`);
+            }
+        }
+    };
+    
+    // Si solo queremos números, usar whitelist
+    if (numbersOnly) {
+        options.tessedit_char_whitelist = '0123456789';
+        options.tessedit_pageseg_mode = 7; // PSM 7: una sola línea de texto
+    }
+    
+    const { data: { text, confidence } } = await Tesseract.recognize(preprocessedPath, lang, options);
+    
+    console.log(`OCR Confidence: ${confidence}%`);
+    
+    // Limpiar imagen preprocesada temporal
+    if (fs.existsSync(preprocessedPath)) {
+        fs.unlinkSync(preprocessedPath);
+    }
+    
+    return { text, confidence };
 }
 
 // Rota una imagen en múltiplos de 90 grados
@@ -41,22 +66,32 @@ async function processPageWithOcr(imagePath, lang = "spa+eng") {
         if (angle !== 0) {
             imgToProcess = await rotateImage(imagePath, angle);
         }
-        const text = await applyOcrToImage(imgToProcess, lang);
+        
+        // OCR general
+        const generalResult = await applyOcrToImage(imgToProcess, lang, false);
         console.log(`OCR en ángulo ${angle}:`);
-        console.log(text);
-        if (isRelevantPage(text)) {
+        console.log(`Texto: ${generalResult.text}`);
+        console.log(`Confianza: ${generalResult.confidence}%`);
+        
+        if (isRelevantPage(generalResult.text)) {
             // Limpia imagen temporal si se creó
             if (angle !== 0 && fs.existsSync(imgToProcess)) {
                 fs.unlinkSync(imgToProcess);
             }
-            return text;
+            
+            return {
+                text: generalResult.text,
+                confidence: generalResult.confidence,
+                angle: angle
+            };
         }
+        
         // Limpia imagen temporal si se creó
         if (angle !== 0 && fs.existsSync(imgToProcess)) {
             fs.unlinkSync(imgToProcess);
         }
     }
-    return ""; // Si ningún ángulo es relevante
+    return null; // Si ningún ángulo es relevante
 }
 
 module.exports = {
