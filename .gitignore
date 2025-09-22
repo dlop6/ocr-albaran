@@ -1,6 +1,13 @@
 node_modules
 docs
 src/temp_results
+src/temp_images
 temp.pdf
 temp_pdf_base64.txt
 ocr-albaran-resultados.md
+spa.traineddata
+eng.traineddata
+temp_pdf_base64.txt
+src/temp_first_page-1.png
+temp_pdf_base64.txt
+src/temp_first_page.pdf

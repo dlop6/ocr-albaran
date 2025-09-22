@@ -2,6 +2,9 @@ const fs = require("fs");
 const path = require("path");
 const { PDFDocument } = require("pdf-lib");
 const Poppler = require("pdf-poppler");
+const { spawn } = require('child_process');
+const popplerBin = require('pdf-poppler').path;
+
 
 // carga el archivo
 async function loadPdf(input) {
@@ -33,13 +36,89 @@ async function extractPagesAsImages(pdfPath, outputDir, noPages) {
 		resolution: 300 // Mejorar resolución
 	};
 	const results = [];
+
 	for (let i = 1; i <= noPages; i++) {
-		options.page = i;
+		const imgPath = path.join(outputDir, `page-${i}.png`);
 		try {
-			await Poppler.convert(pdfPath, options);
-			results.push(path.join(outputDir, `page-${i}.png`));
+			console.log(`[Poppler] Iniciando conversión de página ${i}...`);
+			// Construir comando pdftocairo
+			const args = [
+				'-png', // formato
+				'-r', String(options.resolution || 300), // resolución
+				'-f', String(i), // página inicial
+				'-l', String(i), // página final
+				pdfPath,
+				path.join(outputDir, 'page') // prefijo de salida
+			];
+			const proc = spawn(path.join(popplerBin, 'pdftocairo'), args);
+			let stdout = '';
+			let stderr = '';
+			proc.stdout.on('data', data => { stdout += data.toString(); });
+			proc.stderr.on('data', data => { stderr += data.toString(); });
+			await new Promise((resolve, reject) => {
+				proc.on('close', code => {
+					if (stdout) console.log(`[Poppler][stdout][página ${i}]:`, stdout);
+					if (stderr) console.error(`[Poppler][stderr][página ${i}]:`, stderr);
+					if (code !== 0) {
+						reject(new Error(`pdftocairo exited with code ${code}`));
+					} else {
+						resolve();
+					}
+				});
+			});
+			if (!fs.existsSync(imgPath)) {
+				throw new Error(`Image not generated for page ${i}: ${imgPath}`);
+			}
+			console.log(`[Poppler] Imagen generada para página ${i}: ${imgPath}`);
+			results.push(imgPath);
 		} catch (err) {
-			console.error(`Error converting page ${i}:`, err);
+			console.error(`[Poppler] Error al convertir página ${i}:`, err);
+			// Fallback: extraer la página con pdf-lib y volver a intentar
+			try {
+				const tempSinglePdf = path.join(outputDir, `page-${i}-single.pdf`);
+				const pdfBytes = fs.readFileSync(pdfPath);
+				const pdfDoc = await PDFDocument.load(pdfBytes);
+				const newPdf = await PDFDocument.create();
+				const copiedPages = await newPdf.copyPages(pdfDoc, [i - 1]);
+				newPdf.addPage(copiedPages[0]);
+				const newPdfBytes = await newPdf.save();
+				fs.writeFileSync(tempSinglePdf, newPdfBytes);
+				console.log(`[Fallback] Página ${i} extraída como PDF independiente: ${tempSinglePdf}`);
+				// Intentar conversión con Poppler nuevamente
+				const args2 = [
+					'-png',
+					'-r', String(options.resolution || 300),
+					'-f', '1',
+					'-l', '1',
+					tempSinglePdf,
+					path.join(outputDir, `page-${i}-single`)
+				];
+				const proc2 = spawn(path.join(popplerBin, 'pdftocairo'), args2);
+				let stdout2 = '';
+				let stderr2 = '';
+				proc2.stdout.on('data', data => { stdout2 += data.toString(); });
+				proc2.stderr.on('data', data => { stderr2 += data.toString(); });
+				await new Promise((resolve, reject) => {
+					proc2.on('close', code => {
+						if (stdout2) console.log(`[Poppler][stdout][fallback página ${i}]:`, stdout2);
+						if (stderr2) console.error(`[Poppler][stderr][fallback página ${i}]:`, stderr2);
+						if (code !== 0) {
+							reject(new Error(`pdftocairo fallback exited with code ${code}`));
+						} else {
+							resolve();
+						}
+					});
+				});
+				const fallbackImgPath = path.join(outputDir, `page-${i}-single-1.png`);
+				if (!fs.existsSync(fallbackImgPath)) {
+					throw new Error(`Fallback image not generated for page ${i}: ${fallbackImgPath}`);
+				}
+				console.log(`[Fallback] Imagen generada para página ${i}: ${fallbackImgPath}`);
+				results.push(fallbackImgPath);
+			} catch (fallbackErr) {
+				console.error(`[Fallback] Error al extraer/converter página ${i}:`, fallbackErr);
+				// Registrar el error y continuar con las demás páginas
+			}
 		}
 	}
 	return results;

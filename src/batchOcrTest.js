@@ -17,7 +17,13 @@ async function pdfToBase64(pdfPath) {
 }
 
 async function processAllPdfs() {
-    const files = fs.readdirSync(docsDir).filter(f => f.toLowerCase().endsWith('.pdf'));
+    const exclude = [
+        'RV 9294603525.pdf',
+        'albaran español baja calidad.pdf'
+    ];
+    const files = fs.readdirSync(docsDir)
+        .filter(f => f.toLowerCase().endsWith('.pdf'))
+        .filter(f => !exclude.includes(f));
     for (const file of files) {
         const pdfPath = path.join(docsDir, file);
         console.log(`Procesando: ${file}`);
@@ -28,7 +34,13 @@ async function processAllPdfs() {
             fs.writeFileSync(resultPath, JSON.stringify(response.data, null, 2));
             console.log(`Guardado: ${resultPath}`);
         } catch (err) {
-            console.error(`Error procesando ${file}:`, err.message);
+            console.error(`Error procesando ${file}:`);
+            if (err.response) {
+                console.error('Status:', err.response.status);
+                console.error('Data:', err.response.data);
+            } else {
+                console.error('Error:', err.stack || err);
+            }
         }
     }
     console.log('Procesamiento batch finalizado.');

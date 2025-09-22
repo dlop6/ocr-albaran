@@ -25,6 +25,14 @@ app.post("/api/process-pdf", async (req, res) => {
 		// Cargar PDF y obtener número de páginas
 		const pdfDoc = await pdfService.loadPdf(pdfBuffer);
 		const pageCount = pdfService.getPageCount(pdfDoc);
+		const pdfSizeMB = (pdfBuffer.length / (1024 * 1024)).toFixed(2);
+		console.log(`PDF recibido: ${tempPdfPath}`);
+		console.log(`Tamaño: ${pdfSizeMB} MB, páginas: ${pageCount}`);
+		if (pageCount > 60) {
+			console.error(`PDF tiene ${pageCount} páginas, excede el límite de 60.`);
+			if (fs.existsSync(tempPdfPath)) fs.unlinkSync(tempPdfPath);
+			return res.status(400).json({ error: `PDF tiene ${pageCount} páginas, excede el límite de 60.` });
+		}
 
 		// Convertir cada página a imagen
 		const outputDir = path.join(__dirname, "temp_images");
@@ -64,8 +72,9 @@ app.post("/api/process-pdf", async (req, res) => {
 		// Limpiar en caso de error
 		if (fs.existsSync(tempPdfPath)) fs.unlinkSync(tempPdfPath);
 		pdfService.cleanupTempImages(path.join(__dirname, "temp_images"));
-		console.error(err);
-		return res.status(500).json({ error: "Error processing PDF" });
+		console.error('Error procesando PDF:', err.message);
+		if (err.stack) console.error(err.stack);
+		return res.status(500).json({ error: err.message || "Error processing PDF" });
 	}
 });
 
