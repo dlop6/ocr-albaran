@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 
-const docsDir = path.join(__dirname, '../docs');
+const docsDir = path.join(__dirname, 'docs');
 const resultsDir = path.join(__dirname, 'temp_results');
 const endpoint = 'http://localhost:3000/api/process-pdf';
 

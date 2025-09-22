@@ -6,9 +6,13 @@ const pdfService = require("./pdfService");
 const ocrService = require("./ocrService");
 const parser = require("./parser");
 const fieldExtractor = require("./fieldExtractor");
+const pLimit = require("p-limit").default;
 
 const app = express();
 app.use(bodyParser.json({ limit: "100mb" }));
+
+// Valor de concurrencia configurable
+const DEFAULT_CONCURRENCY = process.env.OCR_CONCURRENCY ? parseInt(process.env.OCR_CONCURRENCY) : 5;
 
 app.post("/api/process-pdf", async (req, res) => {
 	const { pdfBase64 } = req.body;
@@ -38,41 +42,48 @@ app.post("/api/process-pdf", async (req, res) => {
 		const outputDir = path.join(__dirname, "temp_images");
 		const imagePaths = await pdfService.extractPagesAsImages(tempPdfPath, outputDir, pageCount);
 
-		// Procesar cada imagen: OCR + parser
+		// Métricas de tiempo
+		const startTotal = Date.now();
+		const limit = pLimit(DEFAULT_CONCURRENCY);
 		const results = [];
-		for (let i = 0; i < imagePaths.length; i++) {
-			const imagePath = imagePaths[i];
+		let completed = 0;
+		const total = imagePaths.length;
+		const tasks = imagePaths.map((imagePath, i) => limit(async () => {
+			const startPage = Date.now();
 			const ocrResult = await ocrService.processPageWithOcr(imagePath);
-			console.log(`--- Página ${i + 1} ---`);
-			
+			const endPage = Date.now();
+			const pageTime = ((endPage - startPage) / 1000).toFixed(2);
+			completed++;
+			const percent = ((completed / total) * 100).toFixed(1);
 			if (ocrResult) {
-				console.log("Texto extraído:");
-				console.log(ocrResult.text);
-				console.log(`Confianza: ${ocrResult.confidence}%`);
-				console.log(`Ángulo usado: ${ocrResult.angle}°`);
-				console.log("¿Es relevante?", true);
-				
-				results.push({
+				console.log(`[OCR] Página ${i + 1}/${total} procesada | Confianza: ${ocrResult.confidence}% | Ángulo: ${ocrResult.angle}° | Progreso: ${percent}% | Tiempo: ${pageTime}s`);
+				results[i] = {
 					pageNumber: i + 1,
 					text: ocrResult.text,
 					confidence: ocrResult.confidence,
-					angle: ocrResult.angle
-				});
+					angle: ocrResult.angle,
+					timeSeconds: pageTime
+				};
 			} else {
-				console.log("Página no relevante en ningún ángulo");
+				console.log(`[OCR] Página ${i + 1}/${total} no relevante | Progreso: ${percent}% | Tiempo: ${pageTime}s`);
+				results[i] = null;
 			}
-		}
+		}));
+		await Promise.all(tasks);
+		const endTotal = Date.now();
+		const totalTime = ((endTotal - startTotal) / 1000).toFixed(2);
+		console.log(`[OCR] Tiempo total de procesamiento: ${totalTime}s para ${total} páginas (concurrencia: ${DEFAULT_CONCURRENCY})`);
 
 		// Limpiar archivos temporales
 		pdfService.cleanupTempImages(outputDir);
 		if (fs.existsSync(tempPdfPath)) fs.unlinkSync(tempPdfPath);
 
-		return res.json({ pages: results });
+	return res.json({ pages: results.filter(r => r) });
 	} catch (err) {
 		// Limpiar en caso de error
 		if (fs.existsSync(tempPdfPath)) fs.unlinkSync(tempPdfPath);
 		pdfService.cleanupTempImages(path.join(__dirname, "temp_images"));
-		console.error('Error procesando PDF:', err.message);
+		console.error('[OCR] Error procesando PDF:', err.message);
 		if (err.stack) console.error(err.stack);
 		return res.status(500).json({ error: err.message || "Error processing PDF" });
 	}

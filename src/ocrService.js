@@ -6,44 +6,69 @@ const { isRelevantPage } = require('./parser');
 
 
 async function applyOcrToImage(imagePath, lang = "spa+eng", numbersOnly = false) {
+    // Detectar tamaño de imagen antes de preprocesar
+    const metadata = await sharp(imagePath).metadata();
+    let imageTooSmall = false;
+    if (metadata.width < 10 || metadata.height < 10) {
+        imageTooSmall = true;
+        console.warn(`[OCR] Imagen demasiado pequeña (${metadata.width}x${metadata.height}), se procesa igual: ${imagePath}`);
+    }
+        let almostBlank = false;
+
+        // Detección de página casi en blanco
+        try {
+            const threshold = 240; // valor para considerar "blanco"
+            const img = await sharp(imagePath).greyscale().raw().toBuffer({ resolveWithObject: true });
+            const totalPixels = img.info.width * img.info.height;
+            let whitePixels = 0;
+            for (let i = 0; i < img.data.length; i++) {
+                if (img.data[i] > threshold) whitePixels++;
+            }
+            const percentWhite = (whitePixels / totalPixels) * 100;
+            if (percentWhite > 98) {
+                almostBlank = true;
+                console.warn(`[OCR] Página casi en blanco (${percentWhite.toFixed(2)}% blanco): ${imagePath}`);
+            }
+        } catch (err) {
+            console.warn(`[OCR] No se pudo analizar si la página es casi en blanco: ${imagePath}`);
+        }
+
     // Preprocesar imagen antes de OCR de forma conservadora
     const ext = path.extname(imagePath);
     const base = path.basename(imagePath, ext);
     const dir = path.dirname(imagePath);
     const preprocessedPath = path.join(dir, `${base}_preprocessed${ext}`);
-    
+
     // Preprocesamiento suave: solo resize y sharpen
     await sharp(imagePath)
         .resize({ width: 2000 }) // Resolución moderada
         .sharpen({ sigma: 1.0 }) // Nitidez suave
         .normalize() // Normalizar contraste
         .toFile(preprocessedPath);
-    
+
     // Configurar Tesseract
     const options = {
         logger: m => {
-            if (m.status === 'recognizing text') {
-                console.log(`OCR Progress: ${Math.round(m.progress * 100)}%`);
-            }
+            
         }
     };
-    
+
     // Si solo queremos números, usar whitelist
     if (numbersOnly) {
         options.tessedit_char_whitelist = '0123456789';
         options.tessedit_pageseg_mode = 7; // PSM 7: una sola línea de texto
     }
-    
+
     const { data: { text, confidence } } = await Tesseract.recognize(preprocessedPath, lang, options);
-    
+
     console.log(`OCR Confidence: ${confidence}%`);
-    
+
     // Limpiar imagen preprocesada temporal
     if (fs.existsSync(preprocessedPath)) {
         fs.unlinkSync(preprocessedPath);
     }
-    
-    return { text, confidence };
+
+        return { text, confidence, imageTooSmall, almostBlank, width: metadata.width, height: metadata.height };
 }
 
 // Rota una imagen en múltiplos de 90 grados
@@ -69,9 +94,8 @@ async function processPageWithOcr(imagePath, lang = "spa+eng") {
         
         // OCR general
         const generalResult = await applyOcrToImage(imgToProcess, lang, false);
-        console.log(`OCR en ángulo ${angle}:`);
-        console.log(`Texto: ${generalResult.text}`);
-        console.log(`Confianza: ${generalResult.confidence}%`);
+    console.log(`OCR en ángulo ${angle}:`);
+    console.log(`Confianza: ${generalResult.confidence}%`);
         
         if (isRelevantPage(generalResult.text)) {
             // Limpia imagen temporal si se creó
