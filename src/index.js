@@ -56,12 +56,13 @@ app.post("/api/process-pdf", async (req, res) => {
 			completed++;
 			const percent = ((completed / total) * 100).toFixed(1);
 			if (ocrResult) {
-				console.log(`[OCR] Página ${i + 1}/${total} procesada | Confianza: ${ocrResult.confidence}% | Ángulo: ${ocrResult.angle}° | Progreso: ${percent}% | Tiempo: ${pageTime}s`);
+				console.log(`[OCR] Página ${i + 1}/${total} procesada | Confianza: ${ocrResult.confidence}% | Ángulo: ${ocrResult.angle}° | OSD: ${ocrResult.osd ? 'sí' : 'no'} | Progreso: ${percent}% | Tiempo: ${pageTime}s`);
 				results[i] = {
 					pageNumber: i + 1,
 					text: ocrResult.text,
 					confidence: ocrResult.confidence,
 					angle: ocrResult.angle,
+					osd: ocrResult.osd || false,
 					timeSeconds: pageTime
 				};
 			} else {
