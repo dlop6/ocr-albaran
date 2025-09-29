@@ -25,7 +25,8 @@ COPY package*.json ./
 
 RUN npm install --production
 
-# Copiar código
+
+# Copiar código (excluyendo data/ si no se requiere)
 COPY . .
 
 # Exponer puerto
