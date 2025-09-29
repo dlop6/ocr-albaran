@@ -1,9 +1,9 @@
 const fs = require("fs");
 const path = require("path");
 const Tesseract = require("tesseract.js");
-const sharp = require("sharp");
-const { isRelevantPage } = require('./parser');
 
+const sharp = require("sharp");
+const logger = require('./logger');
 const execa = require('execa');
 
 /**
@@ -27,7 +27,7 @@ async function detectOrientationWithOSD(imagePath) {
         }
         return null;
     } catch (err) {
-        console.warn(`[OSD] Error ejecutando OSD: ${err.message}`);
+        logger.warn(`[OSD] Error ejecutando OSD: ${err.message}`);
         return null;
     }
 }
@@ -39,7 +39,7 @@ async function applyOcrToImage(imagePath, lang = "spa+eng", numbersOnly = false)
     let imageTooSmall = false;
     if (metadata.width < 10 || metadata.height < 10) {
         imageTooSmall = true;
-        console.warn(`[OCR] Imagen demasiado pequeña (${metadata.width}x${metadata.height}), se procesa igual: ${imagePath}`);
+        logger.warn(`[OCR] Imagen demasiado pequeña (${metadata.width}x${metadata.height}), se procesa igual: ${imagePath}`);
     }
     let almostBlank = false;
     // Detección de página casi en blanco
@@ -54,30 +54,25 @@ async function applyOcrToImage(imagePath, lang = "spa+eng", numbersOnly = false)
         const percentWhite = (whitePixels / totalPixels) * 100;
         if (percentWhite > 98) {
             almostBlank = true;
-            console.warn(`[OCR] Página casi en blanco (${percentWhite.toFixed(2)}% blanco): ${imagePath}`);
+            logger.warn(`[OCR] Página casi en blanco (${percentWhite.toFixed(2)}% blanco): ${imagePath}`);
         }
     } catch (err) {
-        console.warn(`[OCR] No se pudo analizar si la página es casi en blanco: ${imagePath}`);
+        logger.warn(`[OCR] No se pudo analizar si la página es casi en blanco: ${imagePath}`);
     }
 
     // Preprocesar imagen antes de OCR de forma conservadora
-    const ext = path.extname(imagePath);
-    const base = path.basename(imagePath, ext);
-    const dir = path.dirname(imagePath);
-    const preprocessedPath = path.join(dir, `${base}_preprocessed${ext}`);
-
-    // Preprocesamiento suave: solo resize y sharpen
-    await sharp(imagePath)
+    // Usar streams para evitar archivos temporales si es posible
+    const sharpPipeline = sharp(imagePath)
         .resize({ width: 2000 }) // Resolución moderada
         .sharpen({ sigma: 1.0 }) // Nitidez suave
-        .normalize() // Normalizar contraste
-        .toFile(preprocessedPath);
+        .normalize(); // Normalizar contraste
+
+    // Tesseract.js acepta buffer o stream
+    const preprocessedBuffer = await sharpPipeline.toBuffer();
 
     // Configurar Tesseract
     const options = {
-        logger: m => {
-            
-        }
+        logger: m => {}
     };
 
     // Si solo queremos números, usar whitelist
@@ -86,11 +81,9 @@ async function applyOcrToImage(imagePath, lang = "spa+eng", numbersOnly = false)
         options.tessedit_pageseg_mode = 7; // PSM 7: una sola línea de texto
     }
 
-    const { data: { text, confidence } } = await Tesseract.recognize(preprocessedPath, lang, options);
-    // Limpiar imagen preprocesada temporal
-    if (fs.existsSync(preprocessedPath)) {
-        fs.unlinkSync(preprocessedPath);
-    }
+    const { data: { text, confidence } } = await Tesseract.recognize(preprocessedBuffer, lang, options);
+    // Liberar buffer explícitamente (GC hint)
+    if (global.gc) global.gc();
     return { text, confidence, imageTooSmall, almostBlank, width: metadata.width, height: metadata.height };
 }
 
@@ -113,9 +106,15 @@ async function rotateImage(imagePath, angle) {
     const base = path.basename(imagePath, ext);
     const dir = path.dirname(imagePath);
     const rotatedPath = path.join(dir, `${base}_rot${angle}${ext}`);
-    await sharp(imagePath)
-        .rotate(angle)
-        .toFile(rotatedPath);
+    // Usar stream para minimizar uso de disco
+    await new Promise((resolve, reject) => {
+        const readStream = fs.createReadStream(imagePath);
+        const transform = sharp().rotate(angle);
+        const writeStream = fs.createWriteStream(rotatedPath);
+        readStream.pipe(transform).pipe(writeStream);
+        writeStream.on('finish', resolve);
+        writeStream.on('error', reject);
+    });
     return rotatedPath;
 }
 
@@ -133,7 +132,7 @@ async function processPageWithOcr(imagePath, lang = "spa+eng") {
         }
         // OCR general
         const generalResult = await applyOcrToImage(imgToProcess, lang, false);
-        console.log(`[OSD] Ángulo detectado: ${angle}`);
+        logger.info(`[OSD] Ángulo detectado: ${angle}`);
         if (isRelevantPage(generalResult.text)) {
             if (angle !== 0 && fs.existsSync(imgToProcess)) {
                 fs.unlinkSync(imgToProcess);
@@ -157,7 +156,7 @@ async function processPageWithOcr(imagePath, lang = "spa+eng") {
             fallbackImg = await rotateImage(imagePath, fallbackAngle);
         }
         const generalResult = await applyOcrToImage(fallbackImg, lang, false);
-        console.log(`[Fallback] OCR en ángulo ${fallbackAngle}:`);
+        logger.info(`[Fallback] OCR en ángulo ${fallbackAngle}:`);
         if (isRelevantPage(generalResult.text)) {
             if (fallbackAngle !== 0 && fs.existsSync(fallbackImg)) {
                 fs.unlinkSync(fallbackImg);

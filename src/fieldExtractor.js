@@ -1,3 +1,4 @@
+
 const { applyOcrToImage } = require('./ocrService');
 const sharp = require('sharp');
 const fs = require('fs');

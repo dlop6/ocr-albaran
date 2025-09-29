@@ -18,7 +18,7 @@ function pdfToBase64File(pdfPath) {
 }
 
 // Ruta al PDF a convertir (modifica aquí la ruta)
-const pdfPath = "docs/EJEMPLO 2.pdf";
+const pdfPath = "docs/EJEMPLO 5.pdf";
 
 try {
     const txtPath = pdfToBase64File(pdfPath);

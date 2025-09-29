@@ -1,9 +1,11 @@
+
 const fs = require("fs");
 const path = require("path");
 const { PDFDocument } = require("pdf-lib");
 const Poppler = require("pdf-poppler");
 const { spawn } = require('child_process');
 const popplerBin = require('pdf-poppler').path;
+const logger = require('./logger');
 
 
 // carga el archivo
@@ -48,7 +50,7 @@ async function extractPagesAsImages(pdfPath, outputDir, noPages) {
 		tasks.push(pLimit(DEFAULT_CONCURRENCY)(async () => {
 			const imgPath = path.join(outputDir, `page-${i}.png`);
 			try {
-				// console.log(`[Poppler] Iniciando conversión de página ${i}...`);
+				// logger.info(`[Poppler] Iniciando conversión de página ${i}...`);
 				// Construir comando pdftocairo
 				const args = [
 					'-png', // formato
@@ -65,8 +67,8 @@ async function extractPagesAsImages(pdfPath, outputDir, noPages) {
 				proc.stderr.on('data', data => { stderr += data.toString(); });
 				await new Promise((resolve, reject) => {
 					proc.on('close', code => {
-						if (stdout) console.log(`[Poppler][stdout][página ${i}]:`, stdout);
-						if (stderr) console.error(`[Poppler][stderr][página ${i}]:`, stderr);
+						if (stdout) logger.info(`[Poppler][stdout][página ${i}]: ${stdout}`);
+						if (stderr) logger.error(`[Poppler][stderr][página ${i}]: ${stderr}`);
 						if (code !== 0) {
 							reject(new Error(`pdftocairo exited with code ${code}`));
 						} else {
@@ -77,10 +79,10 @@ async function extractPagesAsImages(pdfPath, outputDir, noPages) {
 				if (!fs.existsSync(imgPath)) {
 					throw new Error(`Image not generated for page ${i}: ${imgPath}`);
 				}
-				// console.log(`[Poppler] Imagen generada para página ${i}: ${imgPath}`);
+				// logger.info(`[Poppler] Imagen generada para página ${i}: ${imgPath}`);
 				results[i - 1] = imgPath;
 			} catch (err) {
-				console.error(`[Poppler] Error al convertir página ${i}:`, err);
+				logger.error(`[Poppler] Error al convertir página ${i}: ${err}`);
 				// Fallback: extraer la página con pdf-lib y volver a intentar
 				try {
 					const tempSinglePdf = path.join(outputDir, `page-${i}-single.pdf`);
@@ -91,7 +93,7 @@ async function extractPagesAsImages(pdfPath, outputDir, noPages) {
 					newPdf.addPage(copiedPages[0]);
 					const newPdfBytes = await newPdf.save();
 					fs.writeFileSync(tempSinglePdf, newPdfBytes);
-					console.log(`[Fallback] Página ${i} extraída como PDF independiente: ${tempSinglePdf}`);
+					logger.info(`[Fallback] Página ${i} extraída como PDF independiente: ${tempSinglePdf}`);
 					// Intentar conversión con Poppler nuevamente
 					const args2 = [
 						'-png',
@@ -108,8 +110,8 @@ async function extractPagesAsImages(pdfPath, outputDir, noPages) {
 					proc2.stderr.on('data', data => { stderr2 += data.toString(); });
 					await new Promise((resolve, reject) => {
 						proc2.on('close', code => {
-							if (stdout2) console.log(`[Poppler][stdout][fallback página ${i}]:`, stdout2);
-							if (stderr2) console.error(`[Poppler][stderr][fallback página ${i}]:`, stderr2);
+							if (stdout2) logger.info(`[Poppler][stdout][fallback página ${i}]: ${stdout2}`);
+							if (stderr2) logger.error(`[Poppler][stderr][fallback página ${i}]: ${stderr2}`);
 							if (code !== 0) {
 								// Eliminar PDF residual si falla la conversión
 								if (fs.existsSync(tempSinglePdf)) {
@@ -129,20 +131,20 @@ async function extractPagesAsImages(pdfPath, outputDir, noPages) {
 						}
 						throw new Error(`Fallback image not generated for page ${i}: ${fallbackImgPath}`);
 					}
-					console.log(`[Fallback] Imagen generada para página ${i}: ${fallbackImgPath}`);
+					logger.info(`[Fallback] Imagen generada para página ${i}: ${fallbackImgPath}`);
 					// Eliminar PDF residual si la imagen se generó correctamente
 					if (fs.existsSync(tempSinglePdf)) {
 						fs.unlinkSync(tempSinglePdf);
 					}
 					results[i - 1] = fallbackImgPath;
 				} catch (fallbackErr) {
-					console.error(`[Fallback] Error al extraer/converter página ${i}:`, fallbackErr);
+					logger.error(`[Fallback] Error al extraer/converter página ${i}: ${fallbackErr}`);
 					// Registrar el error y continuar con las demás páginas
 				}
 			}
 			completed++;
 			const percent = ((completed / total) * 100).toFixed(1);
-			console.log(`[Poppler] Progreso: ${percent}% (${completed}/${total})`);
+			logger.info(`[Poppler] Progreso: ${percent}% (${completed}/${total})`);
 		}));
 	}
 	await Promise.all(tasks);
