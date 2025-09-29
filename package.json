@@ -20,7 +20,7 @@
     "express": "^5.1.0",
     "express-rate-limit": "^8.1.0",
     "helmet": "^8.1.0",
-    "p-limit": "^7.1.1",
+    "p-limit": "^3.1.0",
     "pdf-lib": "^1.17.1",
     "pdf-poppler": "^0.2.1",
     "prom-client": "^15.1.3",

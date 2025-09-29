@@ -13,7 +13,8 @@ OCR Albarán es un servicio Node.js para procesar archivos PDF de albaranes y ex
 ## 🚀 Endpoints API
 
 ### POST `/api/process-pdf`
-Procesa un PDF enviado en base64 y devuelve el texto extraído por página.
+
+Procesa un PDF enviado en base64, filtra solo las páginas relevantes (por keywords como "Proof of Receipt", "DETALLES RECIBO", etc.), y extrae campos estructurados de cada página relevante.
 
 **Body JSON:**
 ```json
@@ -22,19 +23,55 @@ Procesa un PDF enviado en base64 y devuelve el texto extraído por página.
 }
 ```
 
-**Respuesta exitosa:**
+**Respuesta exitosa (nueva estructura):**
 ```json
 {
   "pages": [
-    { "pageNumber": 1, "text": "...", "confidence": 97.5, "angle": 0, "osd": true },
-    ...
-  ]
+    {
+      "pag": 1,
+      "departamento": "Compras",
+      "numeroOrden": "PO-12345",
+      "numeroRecibo": "RV-98765",
+      "total": 1234.56,
+      "statusError": false,
+      "mensaje": ""
+    },
+    {
+      "pag": 2,
+      "departamento": "",
+      "numeroOrden": "PO-54321",
+      "numeroRecibo": "",
+      "total": 0,
+      "statusError": true,
+      "mensaje": "No se encontró Departamento|No se encontró Receiver|No se encontró Total"
+    }
+    // ...una entrada por cada página relevante
+  ],
+  "pdfProcessSeconds": 5.23
 }
 ```
+
+**Campos de la respuesta:**
+- `pag`: número de página (1-based)
+- `departamento`: valor extraído o vacío
+- `numeroOrden`: valor extraído o vacío
+- `numeroRecibo`: valor extraído o vacío
+- `total`: número extraído o 0
+- `statusError`: true si faltó algún campo clave
+- `mensaje`: concatenación de advertencias por campo no encontrado
 
 **Errores comunes:**
 - `400`: pdfBase64 faltante, inválido o no es PDF
 - `400`: PDF excede el límite de páginas
+- `500`: Error interno de procesamiento
+
+**Notas:**
+- Solo se devuelven páginas relevantes (con keywords configurables en el código).
+- Si ningún campo es encontrado en una página, `statusError` será true y `mensaje` detallará los faltantes.
+- El campo `total` siempre es numérico (0 si no se encontró).
+
+**Ejemplo de uso:**
+Ver sección de ejemplos en `/test/` o consulta los archivos JSON de resultados en `/temp_results/`.
 
 
 

@@ -40,14 +40,15 @@ async function extractPagesAsImages(pdfPath, outputDir, noPages) {
 	const results = [];
 
 	// Concurrencia configurable igual que OCR
-	const pLimit = require('p-limit').default;
+	const pLimit = require('p-limit');
 	const DEFAULT_CONCURRENCY = process.env.OCR_CONCURRENCY ? parseInt(process.env.OCR_CONCURRENCY) : 10;
 	let completed = 0;
 	const total = noPages;
 
+	const limit = pLimit(DEFAULT_CONCURRENCY);
 	const tasks = [];
 	for (let i = 1; i <= noPages; i++) {
-		tasks.push(pLimit(DEFAULT_CONCURRENCY)(async () => {
+		tasks.push(limit(async () => {
 			const imgPath = path.join(outputDir, `page-${i}.png`);
 			try {
 				// logger.info(`[Poppler] Iniciando conversión de página ${i}...`);

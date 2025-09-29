@@ -1,10 +1,10 @@
 const fs = require("fs");
 const path = require("path");
 const Tesseract = require("tesseract.js");
-
 const sharp = require("sharp");
 const logger = require('./logger');
 const execa = require('execa');
+const { isRelevantPage } = require('./parser');
 
 /**
  * Ejecuta OSD con Tesseract CLI y devuelve el ángulo detectado (0, 90, 180, 270) o null si falla.
