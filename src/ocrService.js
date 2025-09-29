@@ -33,7 +33,8 @@ async function detectOrientationWithOSD(imagePath) {
 }
 
 
-async function applyOcrToImage(imagePath, lang = "spa+eng", numbersOnly = false) {
+// lang debe ser 'spa' o 'eng' según input, nunca autodetectar ni usar ambos
+async function applyOcrToImage(imagePath, lang = "spa", numbersOnly = false) {
     // Detectar tamaño de imagen antes de preprocesar
     const metadata = await sharp(imagePath).metadata();
     let imageTooSmall = false;
@@ -119,7 +120,8 @@ async function rotateImage(imagePath, angle) {
 }
 
 // Procesa una página: rota y aplica OCR hasta que sea legible
-async function processPageWithOcr(imagePath, lang = "spa+eng") {
+// lang debe ser 'spa' o 'eng' según input
+async function processPageWithOcr(imagePath, lang = "spa") {
     // Intentar OSD primero
     let angle = await detectOrientationWithOSD(imagePath);
     let imgToProcess = imagePath;

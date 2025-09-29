@@ -126,7 +126,24 @@ const DEFAULT_CONCURRENCY = process.env.OCR_CONCURRENCY
 
 // ---------- Endpoint de procesamiento de PDF ----------
 app.post('/api/process-pdf', async (req, res) => {
-	const { pdfBase64 } = req.body;
+	const { pdfBase64, idioma, albaranesEsperados } = req.body;
+	// Validar idioma
+	const idiomaInput = (typeof idioma === 'string') ? idioma.trim().toUpperCase() : '';
+	if (!['ESP', 'ING'].includes(idiomaInput)) {
+		return res.status(400).json({ error: 'El campo "idioma" es obligatorio y debe ser "ESP" o "ING".' });
+	}
+	// Mapear idioma a código de Tesseract
+	const tesseractLang = idiomaInput === 'ESP' ? 'spa' : 'eng';
+
+	// Validar albaranesEsperados si viene (opcional, debe ser número entero positivo)
+	let albaranesEsperadosValue = undefined;
+	if (typeof albaranesEsperados !== 'undefined') {
+		const n = Number(albaranesEsperados);
+		if (!Number.isInteger(n) || n < 0) {
+			return res.status(400).json({ error: 'El campo "albaranesEsperados" debe ser un número entero positivo si se proporciona.' });
+		}
+		albaranesEsperadosValue = n;
+	}
 	const parser = require('./parser');
 	const fieldExtractor = require('./fieldExtractor');
 
@@ -179,12 +196,11 @@ app.post('/api/process-pdf', async (req, res) => {
 		const tasks = imagePaths.map((imagePath, i) =>
 			limit(async () => {
 				const startPage = process.hrtime();
-				const ocrResult = await ocrService.processPageWithOcr(imagePath);
+				// Pasar idioma a OCR
+				const ocrResult = await ocrService.processPageWithOcr(imagePath, tesseractLang);
 				const pageElapsed = process.hrtime(startPage);
 				const pageSeconds = pageElapsed[0] + pageElapsed[1] / 1e9;
-				// Registrar histograma por página
 				pageProcessDuration.observe(pageSeconds);
-
 				if (ocrResult) {
 					ocrResults[i] = {
 						pageNumber: i + 1,
@@ -218,16 +234,23 @@ app.post('/api/process-pdf', async (req, res) => {
 		// 2. Extraer campos estructurados usando fieldExtractor
 		const extracted = relevantPages.map(page => {
 			if (typeof fieldExtractor.extractFieldsFromText === 'function') {
-				return fieldExtractor.extractFieldsFromText(page.text, page.pageNumber);
+				// Pasar idioma a extracción de campos
+				return fieldExtractor.extractFieldsFromText(page.text, page.pageNumber, idiomaInput);
 			}
 			return { pageNumber: page.pageNumber, rawText: page.text };
 		});
 
 		logger.info(`[OCR] PDF procesado correctamente: ${pageCount} páginas, ${pdfSizeMB} MB, tiempo total: ${elapsedSeconds.toFixed(2)}s, páginas relevantes: ${extracted.length}`);
-		return res.json({
-			pages: extracted,
-			pdfProcessSeconds: elapsedSeconds
-		});
+		// Nuevo response con trazabilidad
+		const response = {
+			paginasInput: pageCount,
+			albaranesExtraidos: extracted.length,
+			datos: extracted
+		};
+		if (typeof albaranesEsperadosValue !== 'undefined') {
+			response.albaranesEsperados = albaranesEsperadosValue;
+		}
+		return res.json(response);
 	} catch (err) {
 		logger.error('[OCR] Error procesando PDF:', err);
 		if (err.message && err.message.includes('excede el límite de 60')) {

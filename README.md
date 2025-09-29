@@ -16,49 +16,51 @@ OCR Albarán es un servicio Node.js para procesar archivos PDF de albaranes y ex
 
 Procesa un PDF enviado en base64, filtra solo las páginas relevantes (por keywords como "Proof of Receipt", "DETALLES RECIBO", etc.), y extrae campos estructurados de cada página relevante.
 
+
 **Body JSON:**
 ```json
 {
-  "pdfBase64": "...base64..."
+  "pdfBase64": "...base64...",
+  "idioma": "ESP", // o "ING"
+  "albaranesEsperados": 8 // (opcional)
 }
 ```
 
-**Respuesta exitosa (nueva estructura):**
+
+**Respuesta exitosa (nuevo formato):**
 ```json
 {
-  "pages": [
+  "paginasInput": 10,
+  "albaranesEsperados": 8, // solo si se envió en el input
+  "albaranesExtraidos": 8,
+  "datos": [
     {
-      "pag": 1,
-      "departamento": "Compras",
-      "numeroOrden": "PO-12345",
-      "numeroRecibo": "RV-98765",
-      "total": 1234.56,
+      "pag": 5,
+      "departamento": "96",
+      "numeroOrden": "1900942645",
+      "numeroRecibo": "211306",
+      "total": null,
       "statusError": false,
       "mensaje": ""
-    },
-    {
-      "pag": 2,
-      "departamento": "",
-      "numeroOrden": "PO-54321",
-      "numeroRecibo": "",
-      "total": 0,
-      "statusError": true,
-      "mensaje": "No se encontró Departamento|No se encontró Receiver|No se encontró Total"
     }
-    // ...una entrada por cada página relevante
-  ],
-  "pdfProcessSeconds": 5.23
+    // ...una entrada por cada albarán extraído
+  ]
 }
 ```
 
+
 **Campos de la respuesta:**
-- `pag`: número de página (1-based)
-- `departamento`: valor extraído o vacío
-- `numeroOrden`: valor extraído o vacío
-- `numeroRecibo`: valor extraído o vacío
-- `total`: número extraído o 0
-- `statusError`: true si faltó algún campo clave
-- `mensaje`: concatenación de advertencias por campo no encontrado
+- `paginasInput`: número total de páginas procesadas del PDF
+- `albaranesEsperados`: cantidad esperada de albaranes (si se envió en el input)
+- `albaranesExtraidos`: cantidad de albaranes extraídos (siempre presente)
+- `datos`: array de objetos con los campos extraídos por albarán:
+  - `pag`: número de página (1-based)
+  - `departamento`: valor extraído o vacío
+  - `numeroOrden`: valor extraído o vacío
+  - `numeroRecibo`: valor extraído o vacío
+  - `total`: número extraído o null
+  - `statusError`: true si faltó algún campo clave
+  - `mensaje`: concatenación de advertencias por campo no encontrado
 
 **Errores comunes:**
 - `400`: pdfBase64 faltante, inválido o no es PDF
@@ -101,7 +103,6 @@ Ver sección de ejemplos en `/test/` o consulta los archivos JSON de resultados 
 ## 📦 Requisitos
 - Node.js >= 16
 - poppler-utils instalado en el sistema
-- Archivos `eng.traineddata` y `spa.traineddata` en la carpeta `/data/`
 
 ## ❗ Limitaciones y supuestos
 - Solo PDFs, no imágenes sueltas.
