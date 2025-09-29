@@ -30,8 +30,6 @@ app.post("/api/process-pdf", async (req, res) => {
 		const pdfDoc = await pdfService.loadPdf(pdfBuffer);
 		const pageCount = pdfService.getPageCount(pdfDoc);
 		const pdfSizeMB = (pdfBuffer.length / (1024 * 1024)).toFixed(2);
-		console.log(`PDF recibido: ${tempPdfPath}`);
-		console.log(`Tamaño: ${pdfSizeMB} MB, páginas: ${pageCount}`);
 		if (pageCount > 60) {
 			console.error(`PDF tiene ${pageCount} páginas, excede el límite de 60.`);
 			if (fs.existsSync(tempPdfPath)) fs.unlinkSync(tempPdfPath);
@@ -56,7 +54,6 @@ app.post("/api/process-pdf", async (req, res) => {
 			completed++;
 			const percent = ((completed / total) * 100).toFixed(1);
 			if (ocrResult) {
-				console.log(`[OCR] Página ${i + 1}/${total} procesada | Confianza: ${ocrResult.confidence}% | Ángulo: ${ocrResult.angle}° | OSD: ${ocrResult.osd ? 'sí' : 'no'} | Progreso: ${percent}% | Tiempo: ${pageTime}s`);
 				results[i] = {
 					pageNumber: i + 1,
 					text: ocrResult.text,
@@ -66,14 +63,12 @@ app.post("/api/process-pdf", async (req, res) => {
 					timeSeconds: pageTime
 				};
 			} else {
-				console.log(`[OCR] Página ${i + 1}/${total} no relevante | Progreso: ${percent}% | Tiempo: ${pageTime}s`);
 				results[i] = null;
 			}
 		}));
 		await Promise.all(tasks);
 		const endTotal = Date.now();
 		const totalTime = ((endTotal - startTotal) / 1000).toFixed(2);
-		console.log(`[OCR] Tiempo total de procesamiento: ${totalTime}s para ${total} páginas (concurrencia: ${DEFAULT_CONCURRENCY})`);
 
 		// Limpiar archivos temporales
 		pdfService.cleanupTempImages(outputDir);

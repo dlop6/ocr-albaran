@@ -45,7 +45,7 @@ async function extractFieldFromRegion(imagePath, fieldName, boundingBox = null, 
         };
         
     } catch (error) {
-        console.error(`Error extracting field ${fieldName}:`, error);
+            console.error(`Error extracting field ${fieldName}: ${error.message}`);
         
         // Limpiar archivo temporal en caso de error
         if (boundingBox && fs.existsSync(processedImagePath)) {

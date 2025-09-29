@@ -48,7 +48,7 @@ async function extractPagesAsImages(pdfPath, outputDir, noPages) {
 		tasks.push(pLimit(DEFAULT_CONCURRENCY)(async () => {
 			const imgPath = path.join(outputDir, `page-${i}.png`);
 			try {
-				console.log(`[Poppler] Iniciando conversión de página ${i}...`);
+				// console.log(`[Poppler] Iniciando conversión de página ${i}...`);
 				// Construir comando pdftocairo
 				const args = [
 					'-png', // formato
@@ -77,7 +77,7 @@ async function extractPagesAsImages(pdfPath, outputDir, noPages) {
 				if (!fs.existsSync(imgPath)) {
 					throw new Error(`Image not generated for page ${i}: ${imgPath}`);
 				}
-				console.log(`[Poppler] Imagen generada para página ${i}: ${imgPath}`);
+				// console.log(`[Poppler] Imagen generada para página ${i}: ${imgPath}`);
 				results[i - 1] = imgPath;
 			} catch (err) {
 				console.error(`[Poppler] Error al convertir página ${i}:`, err);

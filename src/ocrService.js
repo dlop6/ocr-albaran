@@ -13,11 +13,11 @@ const execa = require('execa');
  */
 async function detectOrientationWithOSD(imagePath) {
     try {
-        // Ejecuta Tesseract CLI con OSD
-        // --psm 0 activa OSD, -l osd usa el modelo de orientación
-        const { stdout } = await execa('tesseract', [imagePath, 'stdout', '--psm', '0', '-l', 'osd']);
-        // Buscar la línea de orientación en la salida
-        // Ejemplo: "Orientation in degrees: 90"
+    // Ejecuta Tesseract CLI con OSD
+    // --psm 0 activa OSD, -l osd usa el modelo de orientación
+    const { stdout } = await execa('tesseract', [imagePath, 'stdout', '--psm', '0', '-l', 'osd']);
+    // Buscar la línea de orientación en la salida
+    // Ejemplo: "Orientation in degrees: 90"
         const match = stdout.match(/Orientation in degrees:\s*(\d+)/);
         if (match) {
             const angle = parseInt(match[1], 10);
@@ -41,25 +41,24 @@ async function applyOcrToImage(imagePath, lang = "spa+eng", numbersOnly = false)
         imageTooSmall = true;
         console.warn(`[OCR] Imagen demasiado pequeña (${metadata.width}x${metadata.height}), se procesa igual: ${imagePath}`);
     }
-        let almostBlank = false;
-
-        // Detección de página casi en blanco
-        try {
-            const threshold = 240; // valor para considerar "blanco"
-            const img = await sharp(imagePath).greyscale().raw().toBuffer({ resolveWithObject: true });
-            const totalPixels = img.info.width * img.info.height;
-            let whitePixels = 0;
-            for (let i = 0; i < img.data.length; i++) {
-                if (img.data[i] > threshold) whitePixels++;
-            }
-            const percentWhite = (whitePixels / totalPixels) * 100;
-            if (percentWhite > 98) {
-                almostBlank = true;
-                console.warn(`[OCR] Página casi en blanco (${percentWhite.toFixed(2)}% blanco): ${imagePath}`);
-            }
-        } catch (err) {
-            console.warn(`[OCR] No se pudo analizar si la página es casi en blanco: ${imagePath}`);
+    let almostBlank = false;
+    // Detección de página casi en blanco
+    try {
+        const threshold = 240; // valor para considerar "blanco"
+        const img = await sharp(imagePath).greyscale().raw().toBuffer({ resolveWithObject: true });
+        const totalPixels = img.info.width * img.info.height;
+        let whitePixels = 0;
+        for (let i = 0; i < img.data.length; i++) {
+            if (img.data[i] > threshold) whitePixels++;
         }
+        const percentWhite = (whitePixels / totalPixels) * 100;
+        if (percentWhite > 98) {
+            almostBlank = true;
+            console.warn(`[OCR] Página casi en blanco (${percentWhite.toFixed(2)}% blanco): ${imagePath}`);
+        }
+    } catch (err) {
+        console.warn(`[OCR] No se pudo analizar si la página es casi en blanco: ${imagePath}`);
+    }
 
     // Preprocesar imagen antes de OCR de forma conservadora
     const ext = path.extname(imagePath);
@@ -88,15 +87,11 @@ async function applyOcrToImage(imagePath, lang = "spa+eng", numbersOnly = false)
     }
 
     const { data: { text, confidence } } = await Tesseract.recognize(preprocessedPath, lang, options);
-
-    console.log(`OCR Confidence: ${confidence}%`);
-
     // Limpiar imagen preprocesada temporal
     if (fs.existsSync(preprocessedPath)) {
         fs.unlinkSync(preprocessedPath);
     }
-
-        return { text, confidence, imageTooSmall, almostBlank, width: metadata.width, height: metadata.height };
+    return { text, confidence, imageTooSmall, almostBlank, width: metadata.width, height: metadata.height };
 }
 
 // Rota una imagen en múltiplos de 90 grados
@@ -139,7 +134,6 @@ async function processPageWithOcr(imagePath, lang = "spa+eng") {
         // OCR general
         const generalResult = await applyOcrToImage(imgToProcess, lang, false);
         console.log(`[OSD] Ángulo detectado: ${angle}`);
-        console.log(`Confianza: ${generalResult.confidence}%`);
         if (isRelevantPage(generalResult.text)) {
             if (angle !== 0 && fs.existsSync(imgToProcess)) {
                 fs.unlinkSync(imgToProcess);
@@ -164,7 +158,6 @@ async function processPageWithOcr(imagePath, lang = "spa+eng") {
         }
         const generalResult = await applyOcrToImage(fallbackImg, lang, false);
         console.log(`[Fallback] OCR en ángulo ${fallbackAngle}:`);
-        console.log(`Confianza: ${generalResult.confidence}%`);
         if (isRelevantPage(generalResult.text)) {
             if (fallbackAngle !== 0 && fs.existsSync(fallbackImg)) {
                 fs.unlinkSync(fallbackImg);
