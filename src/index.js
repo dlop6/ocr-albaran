@@ -158,8 +158,8 @@ app.post('/api/process-pdf', async (req, res) => {
 		return res.status(400).json({ error: 'Invalid base64 format' });
 	}
 
-	const tempPdfPath = '/tmp/temp.pdf';
-	const outputDir = '/tmp/temp_images';
+	const tempPdfPath = path.join(os.tmpdir(), 'temp.pdf');
+	const outputDir = path.join(os.tmpdir(), 'temp_images');
 	let imagePaths = [];
 	let pageCount = 0;
 	let pdfSizeMB = 0;
