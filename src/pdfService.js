@@ -2,9 +2,7 @@
 const fs = require("fs");
 const path = require("path");
 const { PDFDocument } = require("pdf-lib");
-const Poppler = require("pdf-poppler");
 const { spawn } = require('child_process');
-const popplerBin = require('pdf-poppler').path;
 const logger = require('./logger');
 
 
@@ -30,38 +28,27 @@ async function extractPagesAsImages(pdfPath, outputDir, noPages) {
 	if (!fs.existsSync(outputDir)) {
 		fs.mkdirSync(outputDir);
 	}
-	const options = {
-		format: "png",
-		out_dir: outputDir,
-		out_prefix: path.basename("page"),
-		page: null,
-		resolution: 300 // Mejorar resolución
-	};
 	const results = [];
-
-	// Concurrencia configurable igual que OCR
 	const pLimit = require('p-limit');
 	const DEFAULT_CONCURRENCY = process.env.OCR_CONCURRENCY ? parseInt(process.env.OCR_CONCURRENCY) : 10;
 	let completed = 0;
 	const total = noPages;
-
 	const limit = pLimit(DEFAULT_CONCURRENCY);
 	const tasks = [];
 	for (let i = 1; i <= noPages; i++) {
 		tasks.push(limit(async () => {
 			const imgPath = path.join(outputDir, `page-${i}.png`);
 			try {
-				// logger.info(`[Poppler] Iniciando conversión de página ${i}...`);
 				// Construir comando pdftocairo
 				const args = [
-					'-png', // formato
-					'-r', String(options.resolution || 300), // resolución
-					'-f', String(i), // página inicial
-					'-l', String(i), // página final
+					'-png',
+					'-r', '300',
+					'-f', String(i),
+					'-l', String(i),
 					pdfPath,
-					path.join(outputDir, 'page') // prefijo de salida
+					path.join(outputDir, 'page')
 				];
-				const proc = spawn(path.join(popplerBin, 'pdftocairo'), args);
+				const proc = spawn('pdftocairo', args);
 				let stdout = '';
 				let stderr = '';
 				proc.stdout.on('data', data => { stdout += data.toString(); });
@@ -80,7 +67,6 @@ async function extractPagesAsImages(pdfPath, outputDir, noPages) {
 				if (!fs.existsSync(imgPath)) {
 					throw new Error(`Image not generated for page ${i}: ${imgPath}`);
 				}
-				// logger.info(`[Poppler] Imagen generada para página ${i}: ${imgPath}`);
 				results[i - 1] = imgPath;
 			} catch (err) {
 				logger.error(`[Poppler] Error al convertir página ${i}: ${err}`);
@@ -94,17 +80,16 @@ async function extractPagesAsImages(pdfPath, outputDir, noPages) {
 					newPdf.addPage(copiedPages[0]);
 					const newPdfBytes = await newPdf.save();
 					fs.writeFileSync(tempSinglePdf, newPdfBytes);
-					logger.info(`[Fallback] Página ${i} extraída como PDF independiente: ${tempSinglePdf}`);
 					// Intentar conversión con Poppler nuevamente
 					const args2 = [
 						'-png',
-						'-r', String(options.resolution || 300),
+						'-r', '300',
 						'-f', '1',
 						'-l', '1',
 						tempSinglePdf,
 						path.join(outputDir, `page-${i}-single`)
 					];
-					const proc2 = spawn(path.join(popplerBin, 'pdftocairo'), args2);
+					const proc2 = spawn('pdftocairo', args2);
 					let stdout2 = '';
 					let stderr2 = '';
 					proc2.stdout.on('data', data => { stdout2 += data.toString(); });
@@ -114,7 +99,6 @@ async function extractPagesAsImages(pdfPath, outputDir, noPages) {
 							if (stdout2) logger.info(`[Poppler][stdout][fallback página ${i}]: ${stdout2}`);
 							if (stderr2) logger.error(`[Poppler][stderr][fallback página ${i}]: ${stderr2}`);
 							if (code !== 0) {
-								// Eliminar PDF residual si falla la conversión
 								if (fs.existsSync(tempSinglePdf)) {
 									fs.unlinkSync(tempSinglePdf);
 								}
@@ -126,21 +110,17 @@ async function extractPagesAsImages(pdfPath, outputDir, noPages) {
 					});
 					const fallbackImgPath = path.join(outputDir, `page-${i}-single-1.png`);
 					if (!fs.existsSync(fallbackImgPath)) {
-						// Eliminar PDF residual si no se genera la imagen
 						if (fs.existsSync(tempSinglePdf)) {
 							fs.unlinkSync(tempSinglePdf);
 						}
 						throw new Error(`Fallback image not generated for page ${i}: ${fallbackImgPath}`);
 					}
-					logger.info(`[Fallback] Imagen generada para página ${i}: ${fallbackImgPath}`);
-					// Eliminar PDF residual si la imagen se generó correctamente
 					if (fs.existsSync(tempSinglePdf)) {
 						fs.unlinkSync(tempSinglePdf);
 					}
 					results[i - 1] = fallbackImgPath;
 				} catch (fallbackErr) {
 					logger.error(`[Fallback] Error al extraer/converter página ${i}: ${fallbackErr}`);
-					// Registrar el error y continuar con las demás páginas
 				}
 			}
 			completed++;

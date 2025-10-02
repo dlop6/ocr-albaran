@@ -12,12 +12,14 @@ OCR Albarán es un servicio Node.js para procesar archivos PDF de albaranes y ex
 
 ## 🚀 Endpoints API
 
+### Modo Síncrono (Original)
+
 ### POST `/api/process-pdf`
 
 Procesa un PDF enviado en base64, filtra solo las páginas relevantes (por keywords como "Proof of Receipt", "DETALLES RECIBO", etc.), y extrae campos estructurados de cada página relevante.
 
-
 **Body JSON:**
+
 ```json
 {
   "pdfBase64": "...base64...",
@@ -26,13 +28,14 @@ Procesa un PDF enviado en base64, filtra solo las páginas relevantes (por keywo
 }
 ```
 
+**Respuesta exitosa:**
 
-**Respuesta exitosa (nuevo formato):**
 ```json
 {
   "paginasInput": 10,
-  "albaranesEsperados": 8, // solo si se envió en el input
-  "albaranesExtraidos": 8,
+  "albaranesExtraidos": 7,
+  "statusError": true,
+  "mensaje": "Solo se reconocieron 7 de 8 albaranes. | 2 albaranes parcialmente extraídos.",
   "datos": [
     {
       "pag": 5,
@@ -48,32 +51,115 @@ Procesa un PDF enviado en base64, filtra solo las páginas relevantes (por keywo
 }
 ```
 
+### Modo Asíncrono (Polling) - **RECOMENDADO**
 
-**Campos de la respuesta:**
-- `paginasInput`: número total de páginas procesadas del PDF
-- `albaranesEsperados`: cantidad esperada de albaranes (si se envió en el input)
-- `albaranesExtraidos`: cantidad de albaranes extraídos (siempre presente)
-- `datos`: array de objetos con los campos extraídos por albarán:
-  - `pag`: número de página (1-based)
-  - `departamento`: valor extraído o vacío
-  - `numeroOrden`: valor extraído o vacío
-  - `numeroRecibo`: valor extraído o vacío
-  - `total`: número extraído o null
-  - `statusError`: true si faltó algún campo clave
-  - `mensaje`: concatenación de advertencias por campo no encontrado
+Para PDFs grandes o procesos que pueden tardar más de 30 segundos, usa el modo asíncrono que evita problemas de timeout.
 
-**Errores comunes:**
-- `400`: pdfBase64 faltante, inválido o no es PDF
-- `400`: PDF excede el límite de páginas
-- `500`: Error interno de procesamiento
+### POST `/api/start-process`
 
-**Notas:**
-- Solo se devuelven páginas relevantes (con keywords configurables en el código).
-- Si ningún campo es encontrado en una página, `statusError` será true y `mensaje` detallará los faltantes.
-- El campo `total` siempre es numérico (0 si no se encontró).
+Inicia el procesamiento de un PDF y devuelve un `requestId` para hacer seguimiento.
 
-**Ejemplo de uso:**
-Ver sección de ejemplos en `/test/` o consulta los archivos JSON de resultados en `/temp_results/`.
+**Body JSON:**
+
+```json
+{
+  "pdfBase64": "...base64...",
+  "idioma": "ESP", // o "ING"
+  "albaranesEsperados": 8 // (opcional)
+}
+```
+
+**Respuesta:**
+
+```json
+{
+  "requestId": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "pending",
+  "estimatedTimeMinutes": 3
+}
+```
+
+### GET `/api/status/{requestId}`
+
+Consulta el estado del procesamiento.
+
+**Respuesta:**
+
+```json
+{
+  "requestId": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "processing", // pending|processing|completed|error
+  "createdAt": "2025-10-02T10:30:00Z",
+  "updatedAt": "2025-10-02T10:31:30Z",
+  "progress": "Procesando OCR: 75% (15/20)",
+  "estimatedRemainingMinutes": 1
+}
+```
+
+### GET `/api/result/{requestId}`
+
+Obtiene el resultado final cuando el estado es `completed`.
+
+**Respuesta (mismo formato que el endpoint síncrono):**
+
+```json
+{
+  "paginasInput": 3,
+  "albaranesExtraidos": 1,
+  "datos": [
+    {
+      "pag": 2,
+      "departamento": "95",
+      "numeroOrden": "1100947238",
+      "numeroRecibo": "196257",
+      "total": 0,
+      "statusError": false,
+      "mensaje": ""
+    }
+  ],
+  "statusError": false,
+  "mensaje": ""
+}
+```
+
+**Errores:**
+- `404`: RequestId no encontrado
+- `425`: Procesamiento aún no completado
+- `500`: Error en el procesamiento
+
+### Flujo de Polling Recomendado
+
+1. **Iniciar:** `POST /api/start-process` → obtener `requestId`
+2. **Esperar:** 30-60 segundos (tiempo inicial)
+3. **Consultar:** `GET /api/status/{requestId}` cada 30-60 segundos
+4. **Repetir paso 3** hasta que `status` sea `completed` o `error`
+5. **Obtener resultado:** `GET /api/result/{requestId}`
+
+### GET `/api/jobs` (Debug)
+
+Lista todos los trabajos activos (solo para desarrollo/testing).
+
+**Respuesta:**
+
+```json
+{
+  "stats": {
+    "total": 5,
+    "pending": 1,
+    "processing": 2,
+    "completed": 2,
+    "error": 0
+  },
+  "jobs": [
+    {
+      "requestId": "...",
+      "status": "processing",
+      "createdAt": "...",
+      "progress": "Procesando OCR: 50%"
+    }
+  ]
+}
+```
 
 
 
