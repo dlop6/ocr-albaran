@@ -3,6 +3,7 @@ require('dotenv').config();
 
 const express = require('express');
 const app = express();
+const bodyParser = require('body-parser');
 const fs = require('fs');
 const path = require('path');
 const pdfService = require('./pdfService');
@@ -14,7 +15,6 @@ const logger = require('./logger');
 const promClient = require('prom-client');
 const rateLimit = require('express-rate-limit');
 const os = require('os');
-const jobManager = require('./jobManager');
 
 // ---------- Configuración de rate limiting ----------
 const RATE_LIMIT_WINDOW_MS = process.env.RATE_LIMIT_WINDOW_MS
@@ -77,8 +77,8 @@ app.use(cors({
 }));
 
 // bodyParser (json grande permitido)
-app.use(express.json({ limit: '100mb' }));
-app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+app.use(bodyParser.json({ limit: '100mb' }));
+app.use(bodyParser.urlencoded({ extended: true }));
 
 // Timeout global para peticiones HTTP (default: 10 minutos)
 const HTTP_TIMEOUT_MS = process.env.HTTP_TIMEOUT_MS
@@ -124,70 +124,6 @@ const DEFAULT_CONCURRENCY = process.env.OCR_CONCURRENCY
 	? parseInt(process.env.OCR_CONCURRENCY, 10)
 	: 5;
 
-// ---------- Nuevo endpoint de procesamiento asíncrono ----------
-app.post('/api/start-process', async (req, res) => {
-	const { pdfBase64, idioma, albaranesEsperados } = req.body;
-	
-	try {
-		// Validar idioma
-		const idiomaInput = (typeof idioma === 'string') ? idioma.trim().toUpperCase() : '';
-		if (!['ESP', 'ING'].includes(idiomaInput)) {
-			return res.status(400).json({ error: 'El campo "idioma" es obligatorio y debe ser "ESP" o "ING".' });
-		}
-
-		// Validar albaranesEsperados si viene (opcional)
-		let albaranesEsperadosValue = undefined;
-		if (typeof albaranesEsperados !== 'undefined') {
-			const n = Number(albaranesEsperados);
-			if (!Number.isInteger(n) || n < 0) {
-				return res.status(400).json({ error: 'El campo "albaranesEsperados" debe ser un número entero positivo si se proporciona.' });
-			}
-			albaranesEsperadosValue = n;
-		}
-
-		// Validación base64
-		if (!pdfBase64 || typeof pdfBase64 !== 'string') {
-			return res.status(400).json({ error: 'pdfBase64 must be a non-empty string' });
-		}
-		try {
-			// comprobar si es base64 decodificable
-			const pdfBuffer = Buffer.from(pdfBase64, 'base64');
-			// Validar que sea un PDF válido
-			if (typeof pdfService.validatePdf === 'function') {
-				if (!pdfService.validatePdf(pdfBuffer)) {
-					return res.status(400).json({ error: 'El archivo proporcionado no es un PDF válido' });
-				}
-			}
-		} catch (err) {
-			return res.status(400).json({ error: 'Invalid base64 format' });
-		}
-
-		// Crear trabajo en JobManager
-		const inputData = {
-			pdfBase64,
-			idioma: idiomaInput,
-			albaranesEsperados: albaranesEsperadosValue
-		};
-		const requestId = jobManager.createJob(inputData);
-
-		// Iniciar procesamiento asíncrono
-		setImmediate(() => {
-			processJobAsync(requestId);
-		});
-
-		// Responder inmediatamente con requestId
-		res.json({
-			requestId,
-			status: 'pending',
-			estimatedTimeMinutes: 3
-		});
-
-	} catch (err) {
-		logger.error('[START-PROCESS] Error iniciando procesamiento:', err);
-		return res.status(500).json({ error: err.message || 'Error starting process' });
-	}
-});
-
 // ---------- Endpoint de procesamiento de PDF ----------
 app.post('/api/process-pdf', async (req, res) => {
 	const { pdfBase64, idioma, albaranesEsperados } = req.body;
@@ -222,8 +158,8 @@ app.post('/api/process-pdf', async (req, res) => {
 		return res.status(400).json({ error: 'Invalid base64 format' });
 	}
 
-	const tempPdfPath = path.join(os.tmpdir(), 'temp.pdf');
-	const outputDir = path.join(os.tmpdir(), 'temp_images');
+	const tempPdfPath = '/tmp/temp.pdf';
+	const outputDir = '/tmp/temp_images';
 	let imagePaths = [];
 	let pageCount = 0;
 	let pdfSizeMB = 0;
@@ -363,245 +299,6 @@ app.post('/api/process-pdf', async (req, res) => {
 	}
 });
 
-// ---------- Función de procesamiento asíncrono ----------
-async function processJobAsync(requestId) {
-	try {
-		const job = jobManager.getJob(requestId);
-		if (!job) {
-			logger.error(`[JOB ${requestId}] Trabajo no encontrado para procesar`);
-			return;
-		}
-
-		const { pdfBase64, idioma, albaranesEsperados } = job.inputData;
-		const tesseractLang = idioma === 'ESP' ? 'spa' : 'eng';
-
-		// Actualizar estado a processing
-		jobManager.startProcessing(requestId);
-
-		const tempPdfPath = path.join(os.tmpdir(), 'temp.pdf');
-		const outputDir = path.join(os.tmpdir(), 'temp_images');
-		let imagePaths = [];
-		let pageCount = 0;
-
-		try {
-			const pdfBuffer = Buffer.from(pdfBase64, 'base64');
-			fs.writeFileSync(tempPdfPath, pdfBuffer);
-
-			// Cargar PDF y obtener páginas
-			const pdfDoc = await pdfService.loadPdf(pdfBuffer);
-			pageCount = pdfService.getPageCount(pdfDoc);
-			const pdfSizeMB = Number((pdfBuffer.length / (1024 * 1024)).toFixed(2));
-
-			// Actualizar metadata
-			jobManager.updateJob(requestId, 'processing', {
-				metadata: {
-					pageCount,
-					pdfSizeMB,
-					estimatedTimeMinutes: Math.ceil(pageCount / 2) // estimación: 30s por página
-				}
-			});
-
-			if (pageCount > 60) {
-				throw new Error(`PDF tiene ${pageCount} páginas, excede el límite de 60.`);
-			}
-
-			jobManager.updateProgress(requestId, `Extrayendo ${pageCount} páginas a imágenes...`);
-
-			// Extraer páginas a imágenes
-			imagePaths = await pdfService.extractPagesAsImages(tempPdfPath, outputDir, pageCount);
-
-			const startTotal = process.hrtime();
-			const limit = pLimit(DEFAULT_CONCURRENCY);
-			const ocrResults = new Array(imagePaths.length);
-			
-			let completedPages = 0;
-			const tasks = imagePaths.map((imagePath, i) =>
-				limit(async () => {
-					const ocrResult = await ocrService.processPageWithOcr(imagePath, tesseractLang);
-					completedPages++;
-					
-					// Actualizar progreso
-					const progressPercent = Math.round((completedPages / imagePaths.length) * 100);
-					jobManager.updateProgress(requestId, `Procesando OCR: ${progressPercent}% (${completedPages}/${imagePaths.length})`);
-
-					if (ocrResult) {
-						ocrResults[i] = {
-							pageNumber: i + 1,
-							text: ocrResult.text,
-							confidence: ocrResult.confidence,
-							angle: ocrResult.angle,
-							osd: ocrResult.osd || false
-						};
-					} else {
-						ocrResults[i] = null;
-					}
-				})
-			);
-
-			await Promise.all(tasks);
-
-			jobManager.updateProgress(requestId, 'Extrayendo campos estructurados...');
-
-			// Filtrar páginas relevantes y extraer campos
-			const parser = require('./parser');
-			const fieldExtractor = require('./fieldExtractor');
-
-			const pagesForParser = ocrResults
-				.map((r) => r ? { text: r.text, pageNumber: r.pageNumber } : null)
-				.filter(Boolean);
-
-			const relevantPages = (typeof parser.parseDocument === 'function')
-				? parser.parseDocument(pagesForParser)
-				: pagesForParser;
-
-			const extracted = relevantPages.map(page => {
-				if (typeof fieldExtractor.extractFieldsFromText === 'function') {
-					return fieldExtractor.extractFieldsFromText(page.text, page.pageNumber, idioma);
-				}
-				return { pageNumber: page.pageNumber, rawText: page.text };
-			});
-
-			// Preparar resultado final (mismo formato que endpoint original)
-			const numEsperados = albaranesEsperados;
-			const numExtraidos = extracted.length;
-			const numParciales = extracted.filter(x => x.statusError).length;
-
-			let statusErrorGlobal = false;
-			let mensajeGlobal = [];
-
-			if (typeof numEsperados === 'number' && numExtraidos < numEsperados) {
-				statusErrorGlobal = true;
-				mensajeGlobal.push(`Solo se reconocieron ${numExtraidos} de ${numEsperados} albaranes.`);
-			}
-			if (numParciales > 0) {
-				statusErrorGlobal = true;
-				mensajeGlobal.push(`${numParciales} albaranes parcialmente extraídos.`);
-			}
-
-			const result = {
-				paginasInput: pageCount,
-				albaranesExtraidos: numExtraidos,
-				datos: extracted,
-				statusError: statusErrorGlobal,
-				mensaje: mensajeGlobal.join(' | ')
-			};
-
-			// Marcar trabajo como completado
-			jobManager.completeJob(requestId, result);
-
-			const elapsedTotal = process.hrtime(startTotal);
-			const elapsedSeconds = elapsedTotal[0] + elapsedTotal[1] / 1e9;
-			logger.info(`[JOB ${requestId}] Procesamiento completado: ${pageCount} páginas, ${pdfSizeMB} MB, tiempo: ${elapsedSeconds.toFixed(2)}s, albaranes: ${numExtraidos}`);
-
-		} catch (processingErr) {
-			logger.error(`[JOB ${requestId}] Error en procesamiento:`, processingErr);
-			jobManager.failJob(requestId, processingErr.message || 'Error processing PDF');
-		} finally {
-			// Limpieza de recursos temporales
-			try {
-				if (Array.isArray(imagePaths) && imagePaths.length > 0 && typeof pdfService.cleanupTempImages === 'function') {
-					await pdfService.cleanupTempImages(outputDir);
-				}
-			} catch (cleanupErr) {
-				logger.error(`[JOB ${requestId}] Error al limpiar imágenes temporales:`, cleanupErr);
-			}
-			try {
-				if (fs.existsSync(tempPdfPath)) fs.unlinkSync(tempPdfPath);
-			} catch (cleanupErr) {
-				logger.error(`[JOB ${requestId}] Error al eliminar PDF temporal:`, cleanupErr);
-			}
-		}
-
-	} catch (err) {
-		logger.error(`[JOB ${requestId}] Error crítico en procesamiento:`, err);
-		jobManager.failJob(requestId, err.message || 'Critical processing error');
-	}
-}
-
-// ---------- Endpoint para consultar estado de procesamiento ----------
-app.get('/api/status/:requestId', (req, res) => {
-	const { requestId } = req.params;
-	
-	const job = jobManager.getJob(requestId);
-	if (!job) {
-		return res.status(404).json({ error: 'Request ID not found' });
-	}
-
-	const response = {
-		requestId: job.requestId,
-		status: job.status,
-		createdAt: job.createdAt,
-		updatedAt: job.updatedAt
-	};
-
-	// Agregar información adicional según el estado
-	if (job.progress) {
-		response.progress = job.progress;
-	}
-	
-	if (job.metadata.estimatedTimeMinutes > 0) {
-		const elapsedMinutes = (new Date() - job.createdAt) / (1000 * 60);
-		const remainingMinutes = Math.max(0, job.metadata.estimatedTimeMinutes - elapsedMinutes);
-		response.estimatedRemainingMinutes = Math.ceil(remainingMinutes);
-	}
-
-	if (job.status === 'error' && job.error) {
-		response.error = job.error;
-	}
-
-	res.json(response);
-});
-
-// ---------- Endpoint para obtener resultado final ----------
-app.get('/api/result/:requestId', (req, res) => {
-	const { requestId } = req.params;
-	
-	const job = jobManager.getJob(requestId);
-	if (!job) {
-		return res.status(404).json({ error: 'Request ID not found' });
-	}
-
-	if (job.status !== 'completed') {
-		if (job.status === 'error') {
-			// Devolver formato estándar aunque haya error
-			return res.json({
-				paginasInput: job.metadata?.pageCount || 0,
-				albaranesExtraidos: 0,
-				datos: [],
-				statusError: true,
-				mensaje: job.error || 'Ocurrió un error en el procesamiento.'
-			});
-		} else {
-			return res.status(425).json({ 
-				error: 'Processing not completed yet', 
-				status: job.status,
-				progress: job.progress || ''
-			});
-		}
-	}
-
-	// Devolver resultado en el formato exacto del endpoint original
-	res.json(job.result);
-});
-
-// ---------- Endpoint de debugging para listar trabajos ----------
-app.get('/api/jobs', (req, res) => {
-	const jobs = jobManager.getAllJobs();
-	const stats = jobManager.getStats();
-	
-	res.json({
-		stats,
-		jobs: jobs.map(job => ({
-			requestId: job.requestId,
-			status: job.status,
-			createdAt: job.createdAt,
-			updatedAt: job.updatedAt,
-			progress: job.progress || '',
-			metadata: job.metadata
-		}))
-	});
-});
-
 // ---------- Endpoint de salud ----------
 app.get('/health', async (req, res) => {
 	// Verificar Tesseract
@@ -641,7 +338,7 @@ app.get('/health', async (req, res) => {
 });
 
 // ---------- Start server ----------
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
 	logger.info(`Server running on port ${PORT}`);
 });

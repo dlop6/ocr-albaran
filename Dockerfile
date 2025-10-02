@@ -29,8 +29,8 @@ RUN npm install --production
 # Copiar código (excluyendo data/ si no se requiere)
 COPY . .
 
-# Exponer puerto 3001 (donde Express escucha)
-EXPOSE 3001
+# Exponer puerto
+EXPOSE 3000
 
 # Cambiar a usuario no root para mayor seguridad
 USER node
