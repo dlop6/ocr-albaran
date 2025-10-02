@@ -12,7 +12,7 @@ const path = require('path');
  */
 
 // Configuración del test
-const API_BASE_URL = process.env.API_URL || 'http://localhost:3000';
+const API_BASE_URL = process.env.API_URL || 'https://ocr-albaranes-polling-latest.onrender.com';
 const TEST_PDF_PATH = './docs/albaran ingles.pdf'; // Ajustar según archivo disponible
 const POLL_INTERVAL = 2000; // 2 segundos entre polls
 const MAX_WAIT_TIME = 300000; // 5 minutos máximo de espera

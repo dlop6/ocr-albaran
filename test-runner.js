@@ -10,7 +10,7 @@ const path = require('path');
 
 // Configuración
 const CONFIG = {
-    apiUrl: process.env.API_URL || 'http://localhost:3000',
+    apiUrl: process.env.API_URL || 'https://ocr-albaranes-polling-latest.onrender.com',
     testPdfs: [
         './docs/albaran ingles.pdf',
         './docs/albaran español baja calidad.pdf', 
@@ -118,6 +118,21 @@ class TestRunner {
                 const response = await fetch(`${CONFIG.apiUrl}/api/job-status/${jobId}`);
                 
                 if (!response.ok) {
+                    // Diagnóstico adicional para 404
+                    if (response.status === 404) {
+                        this.log(`Job ${jobId} not found (404). Checking if job was created correctly...`, 'warn');
+                        
+                        // Intentar obtener estadísticas del sistema para ver si hay trabajos
+                        try {
+                            const healthResponse = await fetch(`${CONFIG.apiUrl}/health`);
+                            if (healthResponse.ok) {
+                                const healthData = await healthResponse.json();
+                                this.log(`System stats: ${JSON.stringify(healthData)}`, 'debug');
+                            }
+                        } catch (e) {
+                            this.log(`Could not get system stats: ${e.message}`, 'debug');
+                        }
+                    }
                     throw new Error(`Status check failed: ${response.status}`);
                 }
 

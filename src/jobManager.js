@@ -150,8 +150,14 @@ class JobManager {
     getJobStatus(jobId) {
         const job = this.jobs.get(jobId);
         if (!job) {
+            logger.warn(`[JobManager] Trabajo no encontrado al consultar estado: ${jobId}`, {
+                totalJobs: this.jobs.size,
+                existingJobIds: Array.from(this.jobs.keys()).slice(0, 5) // Solo primeros 5 para no llenar logs
+            });
             return null;
         }
+        
+        logger.debug(`[JobManager] Estado consultado para ${jobId}: ${job.status}`);
         return job.status;
     }
 

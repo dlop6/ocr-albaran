@@ -1,6 +1,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const { PDFDocument } = require("pdf-lib");
 const { spawn } = require('child_process');
 const logger = require('./logger');
@@ -11,7 +12,14 @@ async function loadPdf(input) {
 	if (Buffer.isBuffer(input)) {
 		return await PDFDocument.load(input);
 	} else if (typeof input === "string") {
-		return await PDFDocument.load(fs.readFileSync(input));
+		// Detectar si es base64 o ruta de archivo
+		if (input.length > 50 && /^[A-Za-z0-9+/=]+$/.test(input.slice(0, 100))) {
+			// Es base64 - decodificar a buffer
+			return await PDFDocument.load(Buffer.from(input, 'base64'));
+		} else {
+			// Es ruta de archivo
+			return await PDFDocument.load(fs.readFileSync(input));
+		}
 	}
 	throw new Error("Invalid PDF input");
 }
@@ -154,7 +162,14 @@ function validatePdf(input) {
 		if (Buffer.isBuffer(input)) {
 			PDFDocument.load(input);
 		} else if (typeof input === "string") {
-			PDFDocument.load(fs.readFileSync(input));
+			// Detectar si es base64 o ruta de archivo
+			if (input.length > 50 && /^[A-Za-z0-9+/=]+$/.test(input.slice(0, 100))) {
+				// Es base64 - decodificar a buffer
+				PDFDocument.load(Buffer.from(input, 'base64'));
+			} else {
+				// Es ruta de archivo
+				PDFDocument.load(fs.readFileSync(input));
+			}
 		} else {
 			throw new Error("Invalid PDF input");
 		}
@@ -173,7 +188,7 @@ async function convertPageToImage(pdfDoc, pageNumber) {
 		newPdf.addPage(copiedPage);
 		
 		// Guardar temporalmente el PDF de una página
-		const tempDir = '/tmp';
+		const tempDir = os.tmpdir();
 		const tempPdfPath = path.join(tempDir, `temp_page_${pageNumber}_${Date.now()}.pdf`);
 		const tempImagePath = path.join(tempDir, `temp_image_${pageNumber}_${Date.now()}.png`);
 		

@@ -86,7 +86,15 @@ class OCRWorker {
             
             // Guardar error manteniendo formato
             const errorMessage = error.message || 'Error desconocido durante el procesamiento OCR';
-            jobManager.setJobError(jobId, errorMessage);
+            
+            // Verificar que el job todavía existe antes de actualizar
+            const jobExists = jobManager.getJobStatus(jobId);
+            if (jobExists === null) {
+                logger.error(`[Worker] CRÍTICO: Trabajo ${jobId} desapareció durante el procesamiento`);
+            } else {
+                logger.info(`[Worker] Guardando error para trabajo ${jobId}: ${errorMessage}`);
+                jobManager.setJobError(jobId, errorMessage);
+            }
             
         } finally {
             this.isProcessing = false;
