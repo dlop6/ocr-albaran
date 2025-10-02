@@ -12,17 +12,16 @@ function pdfToBase64File(pdfPath) {
     }
     const pdfBuffer = fs.readFileSync(pdfPath);
     const base64 = pdfBuffer.toString("base64");
-    const txtPath = path.join(__dirname, "temp_pdf_base64.txt");
-    fs.writeFileSync(txtPath, base64);
-    return txtPath;
+    // Ya no se guarda el base64 en ningún archivo
+    return base64;
 }
 
 // Ruta al PDF a convertir (modifica aquí la ruta)
 const pdfPath = "docs/albaran ingles.pdf";
 
 try {
-    const txtPath = pdfToBase64File(pdfPath);
-    console.log("Base64 guardado en:", txtPath);
+    const base64 = pdfToBase64File(pdfPath);
+    console.log("Base64 generado (no guardado en archivo)");
 } catch (err) {
     console.error("Error:", err.message);
 }

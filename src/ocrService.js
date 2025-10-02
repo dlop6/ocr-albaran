@@ -177,10 +177,48 @@ async function processPageWithOcr(imagePath, lang = "spa") {
     return null; // Si ningún ángulo es relevante
 }
 
+// Procesa una imagen desde un buffer (para uso con worker)
+async function processImage(imageBuffer, lang = "spa") {
+    const fs = require('fs');
+    const path = require('path');
+    
+    try {
+        // Guardar buffer temporalmente como archivo
+        const tempDir = '/tmp';
+        const tempImagePath = path.join(tempDir, `temp_ocr_${Date.now()}.png`);
+        
+        if (!fs.existsSync(tempDir)) {
+            fs.mkdirSync(tempDir, { recursive: true });
+        }
+        
+        fs.writeFileSync(tempImagePath, imageBuffer);
+        
+        // Procesar usando la función existente
+        const result = await processPageWithOcr(tempImagePath, lang);
+        
+        // Limpiar archivo temporal
+        try {
+            fs.unlinkSync(tempImagePath);
+        } catch (cleanupErr) {
+            logger.warn('[OCR] Error limpiando archivo temporal:', cleanupErr.message);
+        }
+        
+        return result ? result.text : '';
+        
+    } catch (error) {
+        logger.error('[OCR] Error procesando imagen desde buffer:', {
+            message: error.message,
+            stack: error.stack?.split('\n')[0]
+        });
+        throw error;
+    }
+}
+
 module.exports = {
     applyOcrToImage,
     rotateImage,
     processPageWithOcr,
-    detectOrientationWithOSD
+    detectOrientationWithOSD,
+    processImage
 };
 

@@ -7,7 +7,17 @@
     "test": "test"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node test-runner.js",
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "test:polling": "node test-polling-e2e.js",
+    "test:quick": "node quick-test.js",
+    "test:quick-txt": "node quick-test.js temp_pdf_base64.txt",
+    "test:runner": "node test-runner.js",
+    "test:multiple": "node test-runner.js --count 3",
+    "test:verbose": "node test-runner.js --verbose",
+    "test:health": "curl http://localhost:3000/health",
+    "test:stats": "curl http://localhost:3000/api/job-stats"
   },
   "keywords": [],
   "author": "",
@@ -25,6 +35,7 @@
     "prom-client": "^15.1.3",
     "sharp": "^0.34.4",
     "tesseract.js": "^6.0.1",
+    "uuid": "^13.0.0",
     "winston": "^3.17.0"
   }
 }

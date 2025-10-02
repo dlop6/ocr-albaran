@@ -164,10 +164,75 @@ function validatePdf(input) {
 	}
 }
 
+// Convierte una página específica del PDF a imagen y devuelve el buffer
+async function convertPageToImage(pdfDoc, pageNumber) {
+	try {
+		// Crear un nuevo PDF con solo la página especificada
+		const newPdf = await PDFDocument.create();
+		const [copiedPage] = await newPdf.copyPages(pdfDoc, [pageNumber - 1]);
+		newPdf.addPage(copiedPage);
+		
+		// Guardar temporalmente el PDF de una página
+		const tempDir = '/tmp';
+		const tempPdfPath = path.join(tempDir, `temp_page_${pageNumber}_${Date.now()}.pdf`);
+		const tempImagePath = path.join(tempDir, `temp_image_${pageNumber}_${Date.now()}.png`);
+		
+		if (!fs.existsSync(tempDir)) {
+			fs.mkdirSync(tempDir, { recursive: true });
+		}
+		
+		const pdfBytes = await newPdf.save();
+		fs.writeFileSync(tempPdfPath, pdfBytes);
+		
+		// Convertir a imagen usando pdftocairo
+		await new Promise((resolve, reject) => {
+			const args = [
+				'-png',
+				'-r', '300',
+				'-singlefile',
+				tempPdfPath,
+				tempImagePath.replace('.png', '')
+			];
+			
+			const proc = spawn('pdftocairo', args);
+			
+			proc.on('close', (code) => {
+				if (code === 0) {
+					resolve();
+				} else {
+					reject(new Error(`pdftocairo falló con código ${code}`));
+				}
+			});
+			
+			proc.on('error', (err) => {
+				reject(new Error(`Error ejecutando pdftocairo: ${err.message}`));
+			});
+		});
+		
+		// Leer el buffer de la imagen
+		const imageBuffer = fs.readFileSync(tempImagePath);
+		
+		// Limpiar archivos temporales
+		try {
+			fs.unlinkSync(tempPdfPath);
+			fs.unlinkSync(tempImagePath);
+		} catch (cleanupErr) {
+			logger.warn('[PDF] Error limpiando archivos temporales:', cleanupErr.message);
+		}
+		
+		return imageBuffer;
+		
+	} catch (error) {
+		logger.error(`[PDF] Error convirtiendo página ${pageNumber} a imagen:`, error);
+		throw error;
+	}
+}
+
 module.exports = {
 	loadPdf,
 	getPageCount,
 	extractPagesAsImages,
 	cleanupTempImages,
-	validatePdf
+	validatePdf,
+	convertPageToImage
 };

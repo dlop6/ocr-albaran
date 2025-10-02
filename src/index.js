@@ -16,6 +16,10 @@ const promClient = require('prom-client');
 const rateLimit = require('express-rate-limit');
 const os = require('os');
 
+// Importar módulos de polling
+const jobManager = require('./jobManager');
+const worker = require('./worker');
+
 // ---------- Configuración de rate limiting ----------
 const RATE_LIMIT_WINDOW_MS = process.env.RATE_LIMIT_WINDOW_MS
 	? parseInt(process.env.RATE_LIMIT_WINDOW_MS, 10)
@@ -114,7 +118,10 @@ app.get('/metrics', async (req, res) => {
 		res.set('Content-Type', promClient.register.contentType);
 		res.end(await promClient.register.metrics());
 	} catch (err) {
-		logger.error('[METRICS] Error al obtener métricas:', err);
+		logger.error('[METRICS] Error al obtener métricas:', {
+			message: err.message,
+			stack: err.stack?.split('\n')[0]
+		});
 		res.status(500).end(err.message || 'Error getting metrics');
 	}
 });
@@ -124,7 +131,178 @@ const DEFAULT_CONCURRENCY = process.env.OCR_CONCURRENCY
 	? parseInt(process.env.OCR_CONCURRENCY, 10)
 	: 5;
 
-// ---------- Endpoint de procesamiento de PDF ----------
+// ---------- Endpoints de polling OCR ----------
+
+// Endpoint para iniciar procesamiento OCR asíncrono
+app.post('/api/start-process', async (req, res) => {
+	try {
+		const { pdfBase64, idioma, albaranesEsperados } = req.body;
+
+		// Validar entrada
+		if (!pdfBase64 || typeof pdfBase64 !== 'string') {
+			return res.status(400).json({ 
+				error: 'pdfBase64 es requerido y debe ser una cadena no vacía' 
+			});
+		}
+
+		// Validar idioma
+		const idiomaInput = (typeof idioma === 'string') ? idioma.trim().toUpperCase() : '';
+		if (!['ESP', 'ING'].includes(idiomaInput)) {
+			return res.status(400).json({ 
+				error: 'El campo "idioma" es obligatorio y debe ser "ESP" o "ING"' 
+			});
+		}
+
+		// Validar albaranesEsperados si viene
+		let albaranesEsperadosValue = undefined;
+		if (typeof albaranesEsperados !== 'undefined') {
+			const n = Number(albaranesEsperados);
+			if (!Number.isInteger(n) || n < 0) {
+				return res.status(400).json({ 
+					error: 'El campo "albaranesEsperados" debe ser un número entero positivo si se proporciona' 
+				});
+			}
+			albaranesEsperadosValue = n;
+		}
+
+		// Validar formato base64
+		try {
+			Buffer.from(pdfBase64, 'base64');
+		} catch (err) {
+			return res.status(400).json({ 
+				error: 'Formato base64 inválido' 
+			});
+		}
+
+		// Crear trabajo y devolver jobId
+		const options = {
+			idioma: idiomaInput,
+			albaranesEsperados: albaranesEsperadosValue
+		};
+
+		const jobId = jobManager.createJob(pdfBase64, options);
+
+		logger.info(`[API] Trabajo OCR iniciado: ${jobId}`, {
+			idioma: idiomaInput,
+			albaranesEsperados: albaranesEsperadosValue,
+			pdfSize: `${(pdfBase64.length * 0.75 / 1024 / 1024).toFixed(2)} MB`
+		});
+
+		res.json({ jobId });
+
+	} catch (error) {
+		logger.error('[API] Error iniciando trabajo OCR:', {
+			message: error.message,
+			stack: error.stack?.split('\n')[0]
+		});
+		res.status(500).json({ 
+			error: 'Error interno del servidor al iniciar el procesamiento' 
+		});
+	}
+});
+
+// Endpoint para consultar estado del trabajo
+app.get('/api/job-status/:jobId', async (req, res) => {
+	try {
+		const { jobId } = req.params;
+
+		if (!jobId) {
+			return res.status(400).json({ 
+				error: 'jobId es requerido' 
+			});
+		}
+
+		const status = jobManager.getJobStatus(jobId);
+
+		if (status === null) {
+			return res.status(404).json({ 
+				error: 'Trabajo no encontrado' 
+			});
+		}
+
+		res.json({ 
+			jobId,
+			status 
+		});
+
+	} catch (error) {
+		logger.error('[API] Error consultando estado del trabajo:', {
+			message: error.message,
+			stack: error.stack?.split('\n')[0]
+		});
+		res.status(500).json({ 
+			error: 'Error interno del servidor al consultar el estado' 
+		});
+	}
+});
+
+// Endpoint para obtener resultado del trabajo
+app.get('/api/job-result/:jobId', async (req, res) => {
+	try {
+		const { jobId } = req.params;
+
+		if (!jobId) {
+			return res.status(400).json({
+				paginasInput: 0,
+				albaranesExtraidos: 0,
+				datos: [],
+				statusError: true,
+				mensaje: 'jobId es requerido'
+			});
+		}
+
+		const result = jobManager.getJobResult(jobId);
+
+		if (result === null) {
+			return res.status(404).json({
+				paginasInput: 0,
+				albaranesExtraidos: 0,
+				datos: [],
+				statusError: true,
+				mensaje: 'Trabajo no encontrado'
+			});
+		}
+
+		res.json(result);
+
+	} catch (error) {
+		logger.error('[API] Error obteniendo resultado del trabajo:', {
+			message: error.message,
+			stack: error.stack?.split('\n')[0]
+		});
+		res.status(500).json({
+			paginasInput: 0,
+			albaranesExtraidos: 0,
+			datos: [],
+			statusError: true,
+			mensaje: 'Error interno del servidor al obtener el resultado'
+		});
+	}
+});
+
+// Endpoint para estadísticas del sistema de trabajos (opcional, para debugging)
+app.get('/api/job-stats', async (req, res) => {
+	try {
+		const jobStats = jobManager.getStats();
+		const workerStats = worker.getStats();
+
+		res.json({
+			jobs: jobStats,
+			worker: workerStats
+		});
+
+	} catch (error) {
+		logger.error('[API] Error obteniendo estadísticas:', {
+			message: error.message,
+			stack: error.stack?.split('\n')[0]
+		});
+		res.status(500).json({ 
+			error: 'Error interno del servidor al obtener estadísticas' 
+		});
+	}
+});
+
+// ---------- Endpoint de procesamiento de PDF (original) ----------
 app.post('/api/process-pdf', async (req, res) => {
 	const { pdfBase64, idioma, albaranesEsperados } = req.body;
 	// Validar idioma
@@ -267,7 +445,10 @@ app.post('/api/process-pdf', async (req, res) => {
 		};
 		return res.json(response);
 	} catch (err) {
-		logger.error('[OCR] Error procesando PDF:', err);
+		logger.error('[OCR] Error procesando PDF:', {
+			message: err.message,
+			stack: err.stack?.split('\n')[0]
+		});
 		if (err.message && err.message.includes('excede el límite de 60')) {
 			return res.status(400).json({ error: err.message });
 		}
@@ -289,12 +470,18 @@ app.post('/api/process-pdf', async (req, res) => {
 				});
 			}
 		} catch (cleanupErr) {
-			logger.error('[CLEANUP] Error al limpiar imágenes temporales:', cleanupErr);
+			logger.error('[CLEANUP] Error al limpiar imágenes temporales:', {
+				message: cleanupErr.message,
+				stack: cleanupErr.stack?.split('\n')[0]
+			});
 		}
 		try {
 			if (fs.existsSync(tempPdfPath)) fs.unlinkSync(tempPdfPath);
 		} catch (cleanupErr) {
-			logger.error('[CLEANUP] Error al eliminar PDF temporal:', cleanupErr);
+			logger.error('[CLEANUP] Error al eliminar PDF temporal:', {
+				message: cleanupErr.message,
+				stack: cleanupErr.stack?.split('\n')[0]
+			});
 		}
 	}
 });
@@ -341,4 +528,26 @@ app.get('/health', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
 	logger.info(`Server running on port ${PORT}`);
+	
+	// Iniciar worker OCR para procesamiento en segundo plano
+	worker.start();
+	logger.info('[Worker] Worker OCR iniciado para procesamiento asíncrono');
+
+	// Limpiar trabajos antiguos cada hora
+	setInterval(() => {
+		jobManager.cleanOldJobs(24); // Limpiar trabajos mayores a 24 horas
+	}, 60 * 60 * 1000); // Cada hora
+});
+
+// Manejar cierre graceful del servidor
+process.on('SIGTERM', () => {
+	logger.info('[Server] Recibida señal SIGTERM, cerrando servidor...');
+	worker.stop();
+	process.exit(0);
+});
+
+process.on('SIGINT', () => {
+	logger.info('[Server] Recibida señal SIGINT, cerrando servidor...');
+	worker.stop();
+	process.exit(0);
 });
