@@ -17,7 +17,7 @@ async function detectOrientationWithOSD(imagePath) {
     // --psm 0 activa OSD, -l osd usa el modelo de orientación
     const { stdout } = await execa('tesseract', [imagePath, 'stdout', '--psm', '0', '-l', 'osd']);
     // Buscar la línea de orientación en la salida
-    // Ejemplo: "Orientation in degrees: 90"
+ 
         const match = stdout.match(/Orientation in degrees:\s*(\d+)/);
         if (match) {
             const angle = parseInt(match[1], 10);
@@ -83,7 +83,7 @@ async function applyOcrToImage(imagePath, lang = "spa", numbersOnly = false) {
     }
 
     const { data: { text, confidence } } = await Tesseract.recognize(preprocessedBuffer, lang, options);
-    // Liberar buffer explícitamente (GC hint)
+    // Liberar buffer explícitamente 
     if (global.gc) global.gc();
     return { text, confidence, imageTooSmall, almostBlank, width: metadata.width, height: metadata.height };
 }

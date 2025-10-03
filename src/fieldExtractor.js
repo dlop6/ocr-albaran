@@ -63,7 +63,7 @@ function extractFieldsFromText(text, pag, idioma = 'ESP') {
     } else {
         patterns = {
             numeroOrden: [
-                /PO\s*Number\s*[:\s-]*(\d{8,12})/i,  // patrón actualizado
+                /PO\s*Number\s*[:\s-]*(\d{8,12})/i,  
                 /P\.O[:\s]*(\d{8,12})/i,
                 /P\.O\.[:\s]*(\d{8,12})/i,
                 /PO[:\s-]*(\d{8,12})/i,
