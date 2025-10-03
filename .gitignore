@@ -3,12 +3,11 @@ temp/
 temp_pdf_base64.txt
 src/temp_results/
 *.traineddata
-docs/*.pdf
+
 *.log
 node_modules/
 data/
 node_modules
-docs
 src/temp_results
 src/temp_images
 temp.pdf
