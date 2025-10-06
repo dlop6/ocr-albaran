@@ -21,115 +21,133 @@ function getPageCount(pdf) {
 	return pdf.getPages().length;
 }
 
-// Convierte cada página en imagen y guarda en outputDir
+// Convierte cada página en imagen y guarda en outputDir usando Python/pymupdf
 // pdfPath: ruta al archivo PDF
 // noPages: número de páginas
 async function extractPagesAsImages(pdfPath, outputDir, noPages) {
 	if (!fs.existsSync(outputDir)) {
 		fs.mkdirSync(outputDir);
 	}
-	const results = [];
-	const pLimit = require('p-limit');
-	const DEFAULT_CONCURRENCY = process.env.OCR_CONCURRENCY ? parseInt(process.env.OCR_CONCURRENCY) : 10;
-	let completed = 0;
-	const total = noPages;
-	const limit = pLimit(DEFAULT_CONCURRENCY);
-	const tasks = [];
-	for (let i = 1; i <= noPages; i++) {
-		tasks.push(limit(async () => {
-			const imgPath = path.join(outputDir, `page-${i}.png`);
-			try {
-				// Construir comando pdftocairo
-				const args = [
-					'-png',
-					'-r', '300',
-					'-f', String(i),
-					'-l', String(i),
-					pdfPath,
-					path.join(outputDir, 'page')
-				];
-				const proc = spawn('pdftocairo', args);
-				let stdout = '';
-				let stderr = '';
-				proc.stdout.on('data', data => { stdout += data.toString(); });
-				proc.stderr.on('data', data => { stderr += data.toString(); });
-				await new Promise((resolve, reject) => {
-					proc.on('close', code => {
-						if (stdout) logger.info(`[Poppler][stdout][página ${i}]: ${stdout}`);
-						if (stderr) logger.error(`[Poppler][stderr][página ${i}]: ${stderr}`);
-						if (code !== 0) {
-							reject(new Error(`pdftocairo exited with code ${code}`));
-						} else {
-							resolve();
-						}
-					});
-				});
-				if (!fs.existsSync(imgPath)) {
-					throw new Error(`Image not generated for page ${i}: ${imgPath}`);
-				}
-				results[i - 1] = imgPath;
-			} catch (err) {
-				logger.error(`[Poppler] Error al convertir página ${i}: ${err}`);
-				// Fallback: extraer la página con pdf-lib y volver a intentar
+
+	try {
+		// Invocar script Python según diseño documentado
+		const pythonScriptPath = path.join(__dirname, 'pdf2images.py');
+		
+		// Validar que el script Python existe
+		if (!fs.existsSync(pythonScriptPath)) {
+			throw new Error(`Script Python no encontrado: ${pythonScriptPath}`);
+		}
+
+		// Configurar timeout según diseño (60 segundos)
+		const TIMEOUT_MS = 60000;
+		
+		// Crear promesa para manejar timeout
+		const timeoutPromise = new Promise((_, reject) => {
+			setTimeout(() => reject(new Error('Timeout: La conversión PDF excedió 60 segundos')), TIMEOUT_MS);
+		});
+
+		// Crear promesa para la ejecución del script Python
+		const conversionPromise = new Promise((resolve, reject) => {
+			const args = [pythonScriptPath, pdfPath, outputDir];
+			const proc = spawn('python', args);
+			
+			let stdout = '';
+			let stderr = '';
+			
+			proc.stdout.on('data', data => {
+				stdout += data.toString();
+			});
+			
+			proc.stderr.on('data', data => {
+				stderr += data.toString();
+			});
+			
+			proc.on('close', code => {
 				try {
-					const tempSinglePdf = path.join(outputDir, `page-${i}-single.pdf`);
-					const pdfBytes = fs.readFileSync(pdfPath);
-					const pdfDoc = await PDFDocument.load(pdfBytes);
-					const newPdf = await PDFDocument.create();
-					const copiedPages = await newPdf.copyPages(pdfDoc, [i - 1]);
-					newPdf.addPage(copiedPages[0]);
-					const newPdfBytes = await newPdf.save();
-					fs.writeFileSync(tempSinglePdf, newPdfBytes);
-					// Intentar conversión con Poppler nuevamente
-					const args2 = [
-						'-png',
-						'-r', '300',
-						'-f', '1',
-						'-l', '1',
-						tempSinglePdf,
-						path.join(outputDir, `page-${i}-single`)
-					];
-					const proc2 = spawn('pdftocairo', args2);
-					let stdout2 = '';
-					let stderr2 = '';
-					proc2.stdout.on('data', data => { stdout2 += data.toString(); });
-					proc2.stderr.on('data', data => { stderr2 += data.toString(); });
-					await new Promise((resolve, reject) => {
-						proc2.on('close', code => {
-							if (stdout2) logger.info(`[Poppler][stdout][fallback página ${i}]: ${stdout2}`);
-							if (stderr2) logger.error(`[Poppler][stderr][fallback página ${i}]: ${stderr2}`);
-							if (code !== 0) {
-								if (fs.existsSync(tempSinglePdf)) {
-									fs.unlinkSync(tempSinglePdf);
-								}
-								reject(new Error(`pdftocairo fallback exited with code ${code}`));
-							} else {
-								resolve();
-							}
-						});
-					});
-					const fallbackImgPath = path.join(outputDir, `page-${i}-single-1.png`);
-					if (!fs.existsSync(fallbackImgPath)) {
-						if (fs.existsSync(tempSinglePdf)) {
-							fs.unlinkSync(tempSinglePdf);
-						}
-						throw new Error(`Fallback image not generated for page ${i}: ${fallbackImgPath}`);
+					if (code !== 0) {
+						// Error en el script Python
+						const errorInfo = {
+							exitCode: code,
+							stderr: stderr.trim(),
+							stdout: stdout.trim()
+						};
+						logger.error(`[Python] Script falló con código ${code}. stderr: ${stderr}`);
+						reject(new Error(`Script Python falló con código ${code}: ${stderr || 'Error desconocido'}`));
+						return;
 					}
-					if (fs.existsSync(tempSinglePdf)) {
-						fs.unlinkSync(tempSinglePdf);
+
+					// Parsear JSON de stdout según diseño
+					if (!stdout.trim()) {
+						reject(new Error('Script Python no devolvió salida JSON'));
+						return;
 					}
-					results[i - 1] = fallbackImgPath;
-				} catch (fallbackErr) {
-					logger.error(`[Fallback] Error al extraer/converter página ${i}: ${fallbackErr}`);
+
+					let result;
+					try {
+						result = JSON.parse(stdout.trim());
+					} catch (parseErr) {
+						logger.error(`[Python] Error parseando JSON: ${parseErr}. stdout: ${stdout}`);
+						reject(new Error(`JSON inválido del script Python: ${parseErr.message}`));
+						return;
+					}
+
+					// Validar estructura del JSON según diseño
+					if (!result.images || !Array.isArray(result.images)) {
+						reject(new Error('JSON del script Python no contiene array "images"'));
+						return;
+					}
+
+					logger.info(`[Python] Conversión exitosa: ${result.images.length} imágenes generadas`);
+					resolve(result.images);
+
+				} catch (err) {
+					reject(err);
 				}
+			});
+
+			proc.on('error', err => {
+				logger.error(`[Python] Error ejecutando script: ${err}`);
+				reject(new Error(`Error ejecutando Python: ${err.message}`));
+			});
+		});
+
+		// Ejecutar con timeout
+		const imagePaths = await Promise.race([conversionPromise, timeoutPromise]);
+		
+		// Validar que se generaron las imágenes esperadas
+		if (!imagePaths || imagePaths.length === 0) {
+			throw new Error('No se generaron imágenes desde el script Python');
+		}
+
+		// Validar que los archivos existen físicamente
+		for (const imgPath of imagePaths) {
+			if (!fs.existsSync(imgPath)) {
+				throw new Error(`Imagen reportada pero no encontrada: ${imgPath}`);
 			}
-			completed++;
-			const percent = ((completed / total) * 100).toFixed(1);
-			logger.info(`[Poppler] Progreso: ${percent}% (${completed}/${total})`);
-		}));
+		}
+
+		logger.info(`[Python] Conversión completada: ${imagePaths.length} páginas procesadas`);
+		return imagePaths;
+
+	} catch (err) {
+		logger.error(`[Python] Error en conversión PDF a imágenes: ${err.message}`);
+		
+		// Implementar reintento según diseño (máximo 1 reintento)
+		if (!err.isRetry) {
+			logger.info(`[Python] Reintentando conversión una vez...`);
+			const retryError = new Error(err.message);
+			retryError.isRetry = true;
+			
+			try {
+				return await extractPagesAsImages(pdfPath, outputDir, noPages);
+			} catch (retryErr) {
+				logger.error(`[Python] Reintento también falló: ${retryErr.message}`);
+				throw new Error(`Conversión PDF falló después de reintento: ${retryErr.message}`);
+			}
+		}
+		
+		throw err;
 	}
-	await Promise.all(tasks);
-	return results;
 }
 
 // Elimina imágenes temporales

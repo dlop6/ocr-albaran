@@ -109,9 +109,11 @@ Ver sección de ejemplos en `/test/` o consulta los archivos JSON de resultados 
    npm start
    ```
 
+
 ##  Requisitos
 - Node.js >= 16
-- poppler-utils instalado en el sistema
+- Python >= 3.8
+- PyMuPDF (pymupdf) instalado en el sistema
 - Tesseract OCR instalado con los idiomas necesarios (spa, eng)
 
 ##  Limitaciones y supuestos

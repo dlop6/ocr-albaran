@@ -1,5 +1,6 @@
 # Imagen base con Node
 
+
 FROM node:20-slim
 
 # Instalar dependencias de sistema necesarias para Tesseract (con idiomas español e inglés) y PDF
@@ -10,7 +11,6 @@ RUN apt-get update && apt-get install -y \
     tesseract-ocr-osd \
     libtesseract-dev \
     ghostscript \
-    poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 

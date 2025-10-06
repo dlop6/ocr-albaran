@@ -309,16 +309,12 @@ app.get('/health', async (req, res) => {
 		proc.on('close', code => resolve(code === 0));
 	});
 
-	// Verificar Poppler (pdftocairo)
-	const popplerOk = await new Promise(resolve => {
+	// Verificar Python/pymupdf (reemplaza Poppler según migración)
+	const pythonOk = await new Promise(resolve => {
 		const { spawn } = require('child_process');
-		// -v no siempre devuelve 0 en pdftocairo; simplemente comprobar existencia ejecutable
-		const proc = spawn('pdftocairo', ['-v']);
+		const proc = spawn('python', ['-c', 'import fitz; print("OK")']);
 		proc.on('error', () => resolve(false));
-		proc.on('close', code => {
-			// pdftocairo suele enviar salida por stderr y cerrar con 0; considerar 0 como OK
-			resolve(code === 0);
-		});
+		proc.on('close', code => resolve(code === 0));
 	});
 
 	// Verificar memoria libre (indicador simple)
@@ -332,7 +328,7 @@ app.get('/health', async (req, res) => {
 
 	res.json({
 		tesseract: tesseractOk,
-		poppler: popplerOk,
+		python: pythonOk,
 		diskSpaceOK: diskOk
 	});
 });
