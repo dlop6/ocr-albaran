@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
     tesseract-ocr \
     tesseract-ocr-spa \
     tesseract-ocr-eng \
+    tesseract-ocr-osd \
     libtesseract-dev \
     ghostscript \
     poppler-utils \
@@ -17,8 +18,8 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 RUN chmod -R 755 /app
 
-# Definir entorno de producción
 ENV NODE_ENV=production
+ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/4.00/tessdata/
 
 # Copiar dependencias primero
 COPY package*.json ./
