@@ -204,12 +204,14 @@ function extractFieldsFromText(text, pag, idioma = 'ESP') {
         }
     }
 
+    // Asegurar que 'total' sea número con 2 decimales
+    let totalNum = (typeof total === 'number' && !isNaN(total)) ? Number(total.toFixed(2)) : 0;
     return {
         pag,
         departamento,
         numeroOrden,
         numeroRecibo,
-        total,
+        total: totalNum,
         statusError,
         mensaje: mensajes.join("|")
     };
