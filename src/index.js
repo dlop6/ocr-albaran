@@ -17,6 +17,9 @@ const rateLimit = require('express-rate-limit');
 const os = require('os');
 
 // ---------- Configuración de rate limiting ----------
+// --- Arreglo para evitar "undefined request.ip" ---
+app.set('trust proxy', false);
+
 const RATE_LIMIT_WINDOW_MS = process.env.RATE_LIMIT_WINDOW_MS
 	? parseInt(process.env.RATE_LIMIT_WINDOW_MS, 10)
 	: 15 * 60 * 1000; // 15 min
@@ -31,6 +34,10 @@ const limiter = rateLimit({
 	legacyHeaders: false,
 	message: {
 		error: 'Demasiadas peticiones desde esta IP. Intenta de nuevo más tarde.'
+	},
+	keyGenerator: (req) => {
+		// Usa cabecera o socket, y evita errores cuando no hay IP disponible
+		return req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown';
 	}
 });
 
