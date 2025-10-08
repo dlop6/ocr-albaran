@@ -40,24 +40,25 @@ function extractFieldsFromText(text, pag, idioma = 'ESP') {
     if (idioma === 'ESP') {
         patterns = {
             numeroOrden: [
-                /n[úu]m\.?\s*orden[:\s-]*(\d{8,12})/i,
-                /P\.O[:\s]*(\d{8,12})/i,
-                /P\.O\.[:\s]*(\d{8,12})/i,
-                /PO[:\s-]*(\d{8,12})/i,
-                /p[\s\.]?o[\s\.]?[:\s-]*(\d{8,12})/i,
-                /(?:^|\s)(\d{10})(?:\s|$)/
+            /n[úu]m\.?\s*orden[:\s-]*(\d{8,12})/i,
+            /P\.O[:\s]*(\d{8,12})/i,
+            /P\.O\.[:\s]*(\d{8,12})/i,
+            /PO[:\s-]*(\d{8,12})/i,
+            /p[\s\.]?o[\s\.]?[:\s-]*(\d{8,12})/i,
+            /(?:^|\s)(\d{10})(?:\s|$)/
             ],
             numeroRecibo: [
-                /recibo[\s;:]*(\d{2}-\d{8})/i,
-                /recibo[\s;:]*(\d{8,12})/i
+            /recibo[\s;:]*(\d{2}-\d{8})/i,
+            /recibo[\s;:]*(\d{8,12})/i
             ],
             departamento: [
-                /dpto[:\s]*(\d{2,3})/i,
-                /departamento[:\s-]*(\d{2,3})/i
+            /dpto[:\s]*(\d{2,3})/i,
+            /Dpto[:\s]*(\d{2,3})/i,
+            /departamento[:\s-]*(\d{2,3})/i
             ],
             total: [
-                /importe\s*total[^\d]*(\d{1,6}[.,]\d{2})/i,
-                /total[^\d]*(\d{1,6}[.,]\d{2})/i
+            /importe\s*total[^\d]*(\d{1,6}[.,]\d{2})/i,
+            /total[^\d]*(\d{1,6}[.,]\d{2})/i
             ]
         };
     } else {
@@ -204,17 +205,20 @@ function extractFieldsFromText(text, pag, idioma = 'ESP') {
         }
     }
 
-    // Asegurar que 'total' sea número con 2 decimales
-    let totalNum = (typeof total === 'number' && !isNaN(total)) ? Number(total.toFixed(2)) : 0;
-    return {
+    // Solo incluir 'total' si idioma es ESP
+    const result = {
         pag,
         departamento,
         numeroOrden,
         numeroRecibo,
-        total: totalNum,
         statusError,
         mensaje: mensajes.join("|")
     };
+    if (idioma === 'ESP') {
+        let totalNum = (typeof total === 'number' && !isNaN(total)) ? Number(total.toFixed(2)) : 0;
+        result.total = totalNum;
+    }
+    return result;
 }
 
 module.exports = {
