@@ -29,11 +29,10 @@ async function extractPagesAsImages(pdfPath, outputDir, noPages) {
 		fs.mkdirSync(outputDir);
 	}
 	const results = [];
-	const pLimit = require('p-limit');
-	const DEFAULT_CONCURRENCY = process.env.OCR_CONCURRENCY ? parseInt(process.env.OCR_CONCURRENCY) : 10;
+	const { limit: concurrencyLimit } = require('./concurrency');
 	let completed = 0;
 	const total = noPages;
-	const limit = pLimit(DEFAULT_CONCURRENCY);
+	const limit = concurrencyLimit;
 	const tasks = [];
 	for (let i = 1; i <= noPages; i++) {
 		tasks.push(limit(async () => {
@@ -130,6 +129,121 @@ async function extractPagesAsImages(pdfPath, outputDir, noPages) {
 	}
 	await Promise.all(tasks);
 	return results;
+}
+
+// Streaming extractor: async generator que va entregando cada imagen tan pronto se crea.
+// Permite empezar OCR sin esperar a que todas las imágenes estén generadas.
+async function* extractPagesAsImagesStream(pdfPath, outputDir, noPages) {
+	if (!fs.existsSync(outputDir)) {
+		fs.mkdirSync(outputDir);
+	}
+	const { limit: concurrencyLimit } = require('./concurrency');
+	const limit = concurrencyLimit;
+
+	// Generamos páginas en paralelo limitado, pero las entregamos en el orden de creación.
+	// Para mantener orden de páginas, lanzamos tareas por página y esperamos a que cada una
+	// termine para hacer yield. Esto sigue siendo concurrente pero emite a medida que cada
+	// página esté lista.
+	const tasks = new Array(noPages);
+	for (let i = 1; i <= noPages; i++) {
+		tasks[i - 1] = limit(async () => {
+			const imgPath = path.join(outputDir, `page-${i}.png`);
+			try {
+				const args = [
+					'-png',
+					'-r', '300',
+					'-f', String(i),
+					'-l', String(i),
+					pdfPath,
+					path.join(outputDir, 'page')
+				];
+				const proc = spawn('pdftocairo', args);
+				let stdout = '';
+				let stderr = '';
+				proc.stdout.on('data', data => { stdout += data.toString(); });
+				proc.stderr.on('data', data => { stderr += data.toString(); });
+				await new Promise((resolve, reject) => {
+					proc.on('close', code => {
+						if (stdout) logger.info(`[Poppler][stdout][página ${i}]: ${stdout}`);
+						if (stderr) logger.error(`[Poppler][stderr][página ${i}]: ${stderr}`);
+						if (code !== 0) {
+							reject(new Error(`pdftocairo exited with code ${code}`));
+						} else {
+							resolve();
+						}
+					});
+				});
+				if (!fs.existsSync(imgPath)) {
+					throw new Error(`Image not generated for page ${i}: ${imgPath}`);
+				}
+				return { index: i - 1, path: imgPath };
+			} catch (err) {
+				logger.error(`[Poppler] Error al convertir página ${i}: ${err}`);
+				// fallback similar al existente
+				try {
+					const tempSinglePdf = path.join(outputDir, `page-${i}-single.pdf`);
+					const pdfBytes = fs.readFileSync(pdfPath);
+					const pdfDoc = await PDFDocument.load(pdfBytes);
+					const newPdf = await PDFDocument.create();
+					const copiedPages = await newPdf.copyPages(pdfDoc, [i - 1]);
+					newPdf.addPage(copiedPages[0]);
+					const newPdfBytes = await newPdf.save();
+					fs.writeFileSync(tempSinglePdf, newPdfBytes);
+					const args2 = [
+						'-png',
+						'-r', '300',
+						'-f', '1',
+						'-l', '1',
+						tempSinglePdf,
+						path.join(outputDir, `page-${i}-single`)
+					];
+					const proc2 = spawn('pdftocairo', args2);
+					let stdout2 = '';
+					let stderr2 = '';
+					proc2.stdout.on('data', data => { stdout2 += data.toString(); });
+					proc2.stderr.on('data', data => { stderr2 += data.toString(); });
+					await new Promise((resolve, reject) => {
+						proc2.on('close', code => {
+							if (stdout2) logger.info(`[Poppler][stdout][fallback página ${i}]: ${stdout2}`);
+							if (stderr2) logger.error(`[Poppler][stderr][fallback página ${i}]: ${stderr2}`);
+							if (code !== 0) {
+								if (fs.existsSync(tempSinglePdf)) fs.unlinkSync(tempSinglePdf);
+								reject(new Error(`pdftocairo fallback exited with code ${code}`));
+							} else {
+								resolve();
+							}
+						});
+					});
+					const fallbackImgPath = path.join(outputDir, `page-${i}-single-1.png`);
+					if (!fs.existsSync(fallbackImgPath)) {
+						if (fs.existsSync(tempSinglePdf)) fs.unlinkSync(tempSinglePdf);
+						throw new Error(`Fallback image not generated for page ${i}: ${fallbackImgPath}`);
+					}
+					if (fs.existsSync(tempSinglePdf)) fs.unlinkSync(tempSinglePdf);
+					return { index: i - 1, path: fallbackImgPath };
+				} catch (fallbackErr) {
+					logger.error(`[Fallback] Error al extraer/converter página ${i}: ${fallbackErr}`);
+					return { index: i - 1, path: null, error: fallbackErr };
+				}
+			}
+		});
+	}
+
+	// Esperar a que cada tarea termine y hacer yield en orden de página
+	for (let k = 0; k < tasks.length; k++) {
+		try {
+			const result = await tasks[k];
+			if (result && result.path) {
+				yield result.path;
+			} else {
+				// Si no hay imagen, yield null para indicar fallo en esa página
+				yield null;
+			}
+		} catch (err) {
+			logger.error(`[Stream] Error en tarea de página index ${k}: ${err}`);
+			yield null;
+		}
+	}
 }
 
 // Elimina imágenes temporales
