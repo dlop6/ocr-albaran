@@ -90,7 +90,7 @@ app.use(bodyParser.urlencoded({ extended: true }));
 // Timeout global para peticiones HTTP (default: 10 minutos)
 const HTTP_TIMEOUT_MS = process.env.HTTP_TIMEOUT_MS
 	? parseInt(process.env.HTTP_TIMEOUT_MS, 10)
-	: 600000;
+	: 1600000;
 app.use((req, res, next) => {
 	res.setTimeout(HTTP_TIMEOUT_MS, () => {
 		logger.error(`[HTTP] Timeout alcanzado (${HTTP_TIMEOUT_MS} ms) para ${req.method} ${req.originalUrl}`);
