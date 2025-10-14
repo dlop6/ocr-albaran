@@ -385,6 +385,12 @@ app.get('/health', async (req, res) => {
 	});
 });
 
+// ---------- Log de concurrencia y DPI ----------
+const OCR_CONCURRENCY = process.env.OCR_CONCURRENCY ? String(process.env.OCR_CONCURRENCY) : require('./concurrency').DEFAULT_CONCURRENCY;
+const OCR_DPI = process.env.OCR_DPI ? String(process.env.OCR_DPI) : '300';
+logger.info(`[CONFIG] OCR_CONCURRENCY: ${OCR_CONCURRENCY}`);
+logger.info(`[CONFIG] OCR_DPI: ${OCR_DPI}`);
+
 // ---------- Start server ----------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {

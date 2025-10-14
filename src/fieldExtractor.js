@@ -40,7 +40,6 @@ function extractFieldsFromText(text, pag, idioma = 'ESP') {
     if (idioma === 'ESP') {
         patterns = {
             numeroOrden: [
-            /n[úu]m\.?\s*orden[:\s-]*(\d{8,12})/i,
             /P\.O[:\s]*(\d{8,12})/i,
             /P\.O\.[:\s]*(\d{8,12})/i,
             /PO[:\s-]*(\d{8,12})/i,
@@ -69,7 +68,6 @@ function extractFieldsFromText(text, pag, idioma = 'ESP') {
                 /P\.O\.[:\s]*(\d{8,12})/i,
                 /PO[:\s-]*(\d{8,12})/i,
                 /p[\s\.]?o[\s\.]?[:\s-]*(\d{8,12})/i,
-                /(?:purchase\s*order|order)[:\s-]*(\d{8,12})/i,
                 /(?:^|\s)(\d{10})(?:\s|$)/
             ],
             numeroRecibo: [

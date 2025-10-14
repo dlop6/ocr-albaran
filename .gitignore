@@ -22,3 +22,5 @@ src/temp_first_page.pdf
 temp_results
 docs/planeacion_migracion_python.md
 .env
+test/temp_test
+.github/copilot-instructions.md

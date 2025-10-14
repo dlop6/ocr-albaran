@@ -1,3 +1,5 @@
+// DPI configurable desde .env
+const DPI = process.env.OCR_DPI ? String(process.env.OCR_DPI) : '300';
 
 const fs = require("fs");
 const path = require("path");
@@ -41,7 +43,7 @@ async function extractPagesAsImages(pdfPath, outputDir, noPages) {
 				// Construir comando pdftocairo
 				const args = [
 					'-png',
-					'-r', '300',
+					'-r', DPI,
 					'-f', String(i),
 					'-l', String(i),
 					pdfPath,
@@ -82,7 +84,7 @@ async function extractPagesAsImages(pdfPath, outputDir, noPages) {
 					// Intentar conversión con Poppler nuevamente
 					const args2 = [
 						'-png',
-						'-r', '300',
+						'-r', DPI,
 						'-f', '1',
 						'-l', '1',
 						tempSinglePdf,
@@ -151,7 +153,7 @@ async function* extractPagesAsImagesStream(pdfPath, outputDir, noPages) {
 			try {
 				const args = [
 					'-png',
-					'-r', '300',
+					'-r', DPI,
 					'-f', String(i),
 					'-l', String(i),
 					pdfPath,
@@ -191,7 +193,7 @@ async function* extractPagesAsImagesStream(pdfPath, outputDir, noPages) {
 					fs.writeFileSync(tempSinglePdf, newPdfBytes);
 					const args2 = [
 						'-png',
-						'-r', '300',
+						'-r', DPI,
 						'-f', '1',
 						'-l', '1',
 						tempSinglePdf,
