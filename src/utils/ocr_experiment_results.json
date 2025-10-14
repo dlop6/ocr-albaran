@@ -1,0 +1,18 @@
+{
+  "pngPath": "C:\\Users\\djlop\\AppData\\Local\\Temp\\ocr-exp-cv91vM\\page-1.png",
+  "tmpDir": "C:\\Users\\djlop\\AppData\\Local\\Temp\\ocr-exp-cv91vM",
+  "results": {
+    "raw": {
+      "text": "EJCTAD 08/18/25 EN 13:19:04 TIENDAS VAL-MART, INC DETERMIN. isp0046 $ RPTE. SBP004B1-1 j .\r\n\r\n. p/ PERIOD TERMIN 09/18/25 DETALLES RECIBOS FINAL RPTE NRO PAG. 2 e j\r\n. COPIA PROV ¿ e\r\n> Ñ : p/ ES e\r\n- Expid. £ Factur. . bo\r\nID Prov: . -.--. 10333 COMPANIA DE JABABES -Y ¿BEBIDAS ooo PO 2 IOZZISA o Recibo : 28-08180090 . -. Fimalizad ele MANVAD o on aida Es\r\nDR O RR O e o\r\nIS\r\na... |.\r\nA oa\r\nAN RA RA Es\r\nRR A ss\r\no AL BETE.... SBEOO4BI-1. VER. 2.143... EJCTAD.08/18/25  FN13:19:04 PAR PERIOD TERMIN DR/18/23.. USAR",
+      "seconds": 5.5577931
+    },
+    "preproc": {
+      "text": "EJCTAD 08/18/25 EN 13:19:04 TIENDAS PHAL-MART, INC DETERMIN. isp0046 $ RPTE. SBP004B1-1 ¿ .\r\n\r\n» p/ PERIOD TERMIN 09/18/25 DETALLES RECIBOS FINAL RPTE NRO PAG. 2 e í\r\n. COPIA PROV ; ue\r\n- 4 + p/ a ho\r\n- Expid. £ Factur. . bo\r\nID Prov: . -.--..10333 COMPANIA DE JABABES -Y ¿BEBIDAS ¿ooo PO BZ IOLZISA ic Recibo, + .28-08180090.. -. Finmalizad ele MANYAD oc eds et tdmara Es\r\nDR RR A O e e\r\nA o.\r\nA\r\nA ...2..2>..2..(.\r\nE RA RA\r\nA\r\nA A",
+      "seconds": 4.6907506
+    },
+    "numbers": {
+      "text": "08,182513-1904 -, .0046 . 0041-1 .\r\n. 00971825 1 . 2 .\r\n\r\n.\r\n\r\n- 4\r\n\r\n- .. .\r\n1.-.--..10333.--.022,.28-08180090..-.\r\n0\r\n.\r\n....2..2..2..0.",
+      "seconds": 4.2317432
+    }
+  }
+}

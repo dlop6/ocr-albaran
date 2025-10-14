@@ -1,0 +1,193 @@
+{
+  "poTokenFound": true,
+  "cropPath": "C:\\Users\\djlop\\AppData\\Local\\Temp\\ocr-fields-LnZrkF\\po_line_crop.png",
+  "attemptResult": {
+    "method": "ensemble-line",
+    "picks": [
+      "103333251022154000000",
+      "00000002808180090",
+      "1103332280818009",
+      "110333228081800"
+    ],
+    "votes": {
+      "103333251022154000000": 1,
+      "00000002808180090": 1,
+      "1103332280818009": 1,
+      "110333228081800": 1
+    },
+    "ensembleResults": [
+      {
+        "thr": 150,
+        "psm": "7",
+        "text": ""
+      },
+      {
+        "thr": 150,
+        "psm": "6",
+        "text": "1 ---10333-32510221540000000000000-28-08180090----\r\n00200\r\n4"
+      },
+      {
+        "thr": 170,
+        "psm": "7",
+        "text": ""
+      },
+      {
+        "thr": 170,
+        "psm": "6",
+        "text": "1----10333-228-08180090-\r\n0\r\n---"
+      },
+      {
+        "thr": 190,
+        "psm": "7",
+        "text": ""
+      },
+      {
+        "thr": 190,
+        "psm": "6",
+        "text": "1-----10333-228-08180090-0\r\n0\r\n0-1-"
+      }
+    ]
+  },
+  "tsvRowsSample": [
+    {
+      "level": "1",
+      "page_num": "1",
+      "block_num": "0",
+      "par_num": "0",
+      "line_num": "0",
+      "word_num": "0",
+      "left": "0",
+      "top": "0",
+      "width": "4961",
+      "height": "3509",
+      "conf": "-1",
+      "text": ""
+    },
+    {
+      "level": "2",
+      "page_num": "1",
+      "block_num": "1",
+      "par_num": "0",
+      "line_num": "0",
+      "word_num": "0",
+      "left": "75",
+      "top": "138",
+      "width": "3252",
+      "height": "759",
+      "conf": "-1",
+      "text": ""
+    },
+    {
+      "level": "3",
+      "page_num": "1",
+      "block_num": "1",
+      "par_num": "1",
+      "line_num": "0",
+      "word_num": "0",
+      "left": "217",
+      "top": "138",
+      "width": "3109",
+      "height": "32",
+      "conf": "-1",
+      "text": ""
+    },
+    {
+      "level": "4",
+      "page_num": "1",
+      "block_num": "1",
+      "par_num": "1",
+      "line_num": "1",
+      "word_num": "0",
+      "left": "217",
+      "top": "138",
+      "width": "3073",
+      "height": "32",
+      "conf": "-1",
+      "text": ""
+    },
+    {
+      "level": "5",
+      "page_num": "1",
+      "block_num": "1",
+      "par_num": "1",
+      "line_num": "1",
+      "word_num": "1",
+      "left": "217",
+      "top": "145",
+      "width": "91",
+      "height": "16",
+      "conf": "91.699142",
+      "text": "EJCTAD"
+    },
+    {
+      "level": "5",
+      "page_num": "1",
+      "block_num": "1",
+      "par_num": "1",
+      "line_num": "1",
+      "word_num": "2",
+      "left": "324",
+      "top": "144",
+      "width": "119",
+      "height": "20",
+      "conf": "96.300468",
+      "text": "08/18/25"
+    },
+    {
+      "level": "5",
+      "page_num": "1",
+      "block_num": "1",
+      "par_num": "1",
+      "line_num": "1",
+      "word_num": "3",
+      "left": "462",
+      "top": "147",
+      "width": "29",
+      "height": "15",
+      "conf": "95.327148",
+      "text": "EN"
+    },
+    {
+      "level": "5",
+      "page_num": "1",
+      "block_num": "1",
+      "par_num": "1",
+      "line_num": "1",
+      "word_num": "4",
+      "left": "508",
+      "top": "144",
+      "width": "115",
+      "height": "20",
+      "conf": "72.558739",
+      "text": "13:19:04"
+    },
+    {
+      "level": "5",
+      "page_num": "1",
+      "block_num": "1",
+      "par_num": "1",
+      "line_num": "1",
+      "word_num": "5",
+      "left": "1246",
+      "top": "147",
+      "width": "194",
+      "height": "17",
+      "conf": "87.650253",
+      "text": "TIENDAS"
+    },
+    {
+      "level": "5",
+      "page_num": "1",
+      "block_num": "1",
+      "par_num": "1",
+      "line_num": "1",
+      "word_num": "6",
+      "left": "1473",
+      "top": "147",
+      "width": "236",
+      "height": "18",
+      "conf": "0.000000",
+      "text": "VAL-MART,"
+    }
+  ]
+}
