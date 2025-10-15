@@ -44,6 +44,7 @@ function extractFieldsFromText(text, pag, idioma = 'ESP') {
             /P\.O\.[:\s]*(\d{8,12})/i,
             /PO[:\s-]*(\d{8,12})/i,
             /p[\s\.]?o[\s\.]?[:\s-]*(\d{8,12})/i,
+            /2[.,]0[:\s-]*(\d{8,12})/i, // OCR puede confundir 'P.O' con '2.0'
             /(?:^|\s)(\d{10})(?:\s|$)/
             ],
             numeroRecibo: [
@@ -68,6 +69,7 @@ function extractFieldsFromText(text, pag, idioma = 'ESP') {
                 /P\.O\.[:\s]*(\d{8,12})/i,
                 /PO[:\s-]*(\d{8,12})/i,
                 /p[\s\.]?o[\s\.]?[:\s-]*(\d{8,12})/i,
+                /2[.,]0[:\s-]*(\d{8,12})/i, // OCR puede confundir 'P.O' con '2.0'
                 /(?:^|\s)(\d{10})(?:\s|$)/
             ],
             numeroRecibo: [
