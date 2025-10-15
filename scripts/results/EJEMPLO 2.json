@@ -8,7 +8,8 @@
       "numeroOrden": "1900942645",
       "numeroRecibo": "211306",
       "statusError": false,
-      "mensaje": ""
+      "mensaje": "",
+      "timeSeconds": 40.3351015
     },
     {
       "pag": 9,
@@ -16,7 +17,8 @@
       "numeroOrden": "5501005440",
       "numeroRecibo": "211307",
       "statusError": false,
-      "mensaje": ""
+      "mensaje": "",
+      "timeSeconds": 37.4160585
     },
     {
       "pag": 13,
@@ -24,7 +26,8 @@
       "numeroOrden": "1300946746",
       "numeroRecibo": "211309",
       "statusError": false,
-      "mensaje": ""
+      "mensaje": "",
+      "timeSeconds": 23.6002569
     },
     {
       "pag": 16,
@@ -32,7 +35,8 @@
       "numeroOrden": "5501005445",
       "numeroRecibo": "211305",
       "statusError": false,
-      "mensaje": ""
+      "mensaje": "",
+      "timeSeconds": 25.4703473
     },
     {
       "pag": 19,
@@ -40,7 +44,8 @@
       "numeroOrden": "1900942647",
       "numeroRecibo": "211304",
       "statusError": false,
-      "mensaje": ""
+      "mensaje": "",
+      "timeSeconds": 23.20966
     },
     {
       "pag": 22,
@@ -48,7 +53,8 @@
       "numeroOrden": "1300946754",
       "numeroRecibo": "211308",
       "statusError": false,
-      "mensaje": ""
+      "mensaje": "",
+      "timeSeconds": 22.6410081
     },
     {
       "pag": 28,
@@ -56,7 +62,8 @@
       "numeroOrden": "5501005433",
       "numeroRecibo": "211311",
       "statusError": false,
-      "mensaje": ""
+      "mensaje": "",
+      "timeSeconds": 21.3481775
     },
     {
       "pag": 33,
@@ -64,7 +71,8 @@
       "numeroOrden": "5501005432",
       "numeroRecibo": "211310",
       "statusError": false,
-      "mensaje": ""
+      "mensaje": "",
+      "timeSeconds": 19.5895762
     }
   ],
   "paginasBlancas": [

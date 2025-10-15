@@ -7,11 +7,16 @@
       "departamento": "95",
       "numeroOrden": "5501004756",
       "numeroRecibo": "200798",
-      "statusError": true,
-      "mensaje": "No se encontró Total",
-      "total": 0
+      "statusError": false,
+      "mensaje": "",
+      "timeSeconds": 18.4277252
     }
   ],
-  "statusError": true,
-  "mensaje": "Solo se reconocieron 1 de 18 albaranes. | 1 albaranes parcialmente extraídos."
+  "paginasBlancas": [
+    3,
+    4,
+    5
+  ],
+  "statusError": false,
+  "mensaje": ""
 }

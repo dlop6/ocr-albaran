@@ -289,11 +289,20 @@ app.post('/api/process-pdf', async (req, res) => {
 			? parser.parseDocument(pagesForParser)
 			: pagesForParser; // si no existe parser, devolver todo
 
-		// 2. Extraer campos estructurados usando fieldExtractor
+
+		// 2. Extraer campos estructurados usando fieldExtractor, incluyendo timeSeconds
 		const extracted = relevantPages.map(page => {
 			if (typeof fieldExtractor.extractFieldsFromText === 'function') {
-				// Pasar idioma a extracción de campos
-				return fieldExtractor.extractFieldsFromText(page.text, page.pageNumber, idiomaInput);
+				// Buscar el tiempo de análisis de la página
+				let timeSeconds = null;
+				// Buscar en ocrResults por pageNumber
+				const ocrResult = ocrResults[page.pageNumber - 1];
+				if (ocrResult && typeof ocrResult.timeSeconds === 'number') {
+					timeSeconds = ocrResult.timeSeconds;
+				}
+				// Extraer campos y añadir timeSeconds
+				const campos = fieldExtractor.extractFieldsFromText(page.text, page.pageNumber, idiomaInput);
+				return { ...campos, timeSeconds };
 			}
 			return { pageNumber: page.pageNumber, rawText: page.text };
 		});

@@ -24,3 +24,5 @@ docs/planeacion_migracion_python.md
 .env
 test/temp_test
 .github/copilot-instructions.md
+scripts/results
+scripts/results/
