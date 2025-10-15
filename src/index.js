@@ -9,6 +9,7 @@ const path = require('path');
 const pdfService = require('./pdfService');
 const ocrService = require('./ocrService');
 const { limit: concurrencyLimit } = require('./concurrency');
+const isImageBlank = require('./utils/isImageBlank');
 const helmet = require('helmet');
 const cors = require('cors');
 const logger = require('./logger');
@@ -197,71 +198,80 @@ app.post('/api/process-pdf', async (req, res) => {
 		// Extraer páginas a imágenes (pdfService.extractPagesAsImages debe crear outputDir)
 		const startTotal = process.hrtime();
 		const limit = concurrencyLimit;
-		const ocrResults = new Array(pageCount);
-		const tasks = [];
-		// Si pdfService provee un stream async, usarlo; sino, fallback al método existente
+		let allImagePaths = [];
+		// 1. Obtener todas las rutas de imágenes y asociar con número de página
 		if (typeof pdfService.extractPagesAsImagesStream === 'function') {
 			let pageIndex = 0;
 			for await (const imagePath of pdfService.extractPagesAsImagesStream(tempPdfPath, outputDir, pageCount)) {
-				const i = pageIndex; // índice local
+				allImagePaths.push({ imagePath, pageNumber: pageIndex + 1 });
 				pageIndex++;
-				if (!imagePath) {
-					// marcar como nulo si no se generó imagen
-					ocrResults[i] = null;
-					continue;
-				}
-				// Lanzar OCR usando el limitador global
-				const task = limit(async () => {
-					const startPage = process.hrtime();
-					const ocrResult = await ocrService.processPageWithOcr(imagePath, tesseractLang);
-					const pageElapsed = process.hrtime(startPage);
-					const pageSeconds = pageElapsed[0] + pageElapsed[1] / 1e9;
-					pageProcessDuration.observe(pageSeconds);
-					if (ocrResult) {
-						ocrResults[i] = {
-							pageNumber: i + 1,
-							text: ocrResult.text,
-							confidence: ocrResult.confidence,
-							angle: ocrResult.angle,
-							osd: ocrResult.osd || false,
-							timeSeconds: pageSeconds
-						};
-					} else {
-						ocrResults[i] = null;
-					}
-					// limpiar imagen temporal inmediatamente
-					try { if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath); } catch (e) { /* ignore */ }
-				});
-				tasks.push(task);
 			}
 		} else {
-			// Fallback: comportamiento anterior (esperar a que pdfService devuelva todas las rutas)
 			imagePaths = await pdfService.extractPagesAsImages(tempPdfPath, outputDir, pageCount);
 			for (let i = 0; i < imagePaths.length; i++) {
-				const imagePath = imagePaths[i];
-				const task = limit(async () => {
-					const startPage = process.hrtime();
-					const ocrResult = await ocrService.processPageWithOcr(imagePath, tesseractLang);
-					const pageElapsed = process.hrtime(startPage);
-					const pageSeconds = pageElapsed[0] + pageElapsed[1] / 1e9;
-					pageProcessDuration.observe(pageSeconds);
-					if (ocrResult) {
-						ocrResults[i] = {
-							pageNumber: i + 1,
-							text: ocrResult.text,
-							confidence: ocrResult.confidence,
-							angle: ocrResult.angle,
-							osd: ocrResult.osd || false,
-							timeSeconds: pageSeconds
-						};
-					} else {
-						ocrResults[i] = null;
-					}
-					try { if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath); } catch (e) { /* ignore */ }
-				});
-				tasks.push(task);
+				allImagePaths.push({ imagePath: imagePaths[i], pageNumber: i + 1 });
 			}
 		}
+
+		// 2. Filtrar páginas casi blancas antes de OSD/OCR
+		const paginasBlancas = [];
+		const imagenesValidas = [];
+		for (const { imagePath, pageNumber } of allImagePaths) {
+			if (!imagePath) {
+				paginasBlancas.push(pageNumber);
+				continue;
+			}
+			let esBlanca = false;
+			try {
+				esBlanca = await isImageBlank(imagePath);
+			} catch (err) {
+				logger.warn(`[BLANK DETECTION] Error analizando página ${pageNumber}: ${err.message}`);
+			}
+			if (esBlanca) {
+				paginasBlancas.push(pageNumber);
+				logger.info(`[BLANK] Página ${pageNumber} descartada por ser casi en blanco.`);
+				try { if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath); } catch (e) { /* ignore */ }
+			} else {
+				imagenesValidas.push({ imagePath, pageNumber });
+			}
+		}
+		if (paginasBlancas.length > 0) {
+			logger.info(`[BLANK] Páginas descartadas antes de análisis: ${paginasBlancas.join(', ')}`);
+		}
+
+		// 3. Procesar solo imágenes válidas con OSD/OCR
+		const ocrResults = new Array(pageCount);
+		const tasks = [];
+		for (const { imagePath, pageNumber } of imagenesValidas) {
+			const i = pageNumber - 1;
+			const task = limit(async () => {
+				const startPage = process.hrtime();
+				const ocrResult = await ocrService.processPageWithOcr(imagePath, tesseractLang);
+				const pageElapsed = process.hrtime(startPage);
+				const pageSeconds = pageElapsed[0] + pageElapsed[1] / 1e9;
+				pageProcessDuration.observe(pageSeconds);
+				if (ocrResult) {
+					ocrResults[i] = {
+						pageNumber,
+						text: ocrResult.text,
+						confidence: ocrResult.confidence,
+						angle: ocrResult.angle,
+						osd: ocrResult.osd || false,
+						timeSeconds: pageSeconds
+					};
+				} else {
+					ocrResults[i] = null;
+				}
+				try { if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath); } catch (e) { /* ignore */ }
+			});
+			tasks.push(task);
+		}
+		// Las páginas blancas quedan como null en ocrResults
+		for (const pageNumber of paginasBlancas) {
+			ocrResults[pageNumber - 1] = null;
+		}
+		// Esperar a que todos los OCR terminen
+		await Promise.all(tasks);
 		
 		// Esperar a que todos los OCR terminen
 		await Promise.all(tasks);
@@ -310,6 +320,7 @@ app.post('/api/process-pdf', async (req, res) => {
 			paginasInput: pageCount,
 			albaranesExtraidos: numExtraidos,
 			datos: extracted,
+			paginasBlancas,
 			statusError: statusErrorGlobal,
 			mensaje: mensajeGlobal.join(' | ')
 		};

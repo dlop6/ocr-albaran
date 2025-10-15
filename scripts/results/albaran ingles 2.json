@@ -1,0 +1,17 @@
+{
+  "paginasInput": 5,
+  "albaranesExtraidos": 1,
+  "datos": [
+    {
+      "pag": 2,
+      "departamento": "95",
+      "numeroOrden": "5501004756",
+      "numeroRecibo": "200798",
+      "statusError": true,
+      "mensaje": "No se encontró Total",
+      "total": 0
+    }
+  ],
+  "statusError": true,
+  "mensaje": "Solo se reconocieron 1 de 18 albaranes. | 1 albaranes parcialmente extraídos."
+}
