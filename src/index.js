@@ -213,7 +213,9 @@ app.post('/api/process-pdf', async (req, res) => {
 			}
 		}
 
-		// 2. Filtrar páginas casi blancas antes de OSD/OCR
+		// 2. Filtrar páginas casi blancas antes de OSD/OCR, con excepción quick-OCR
+		// paginasBlancas: números de páginas descartadas
+		// imagenesValidas: rutas que se enviarán a OCR completo
 		const paginasBlancas = [];
 		const imagenesValidas = [];
 		for (const { imagePath, pageNumber } of allImagePaths) {
@@ -227,10 +229,50 @@ app.post('/api/process-pdf', async (req, res) => {
 			} catch (err) {
 				logger.warn(`[BLANK DETECTION] Error analizando página ${pageNumber}: ${err.message}`);
 			}
+
 			if (esBlanca) {
-				paginasBlancas.push(pageNumber);
-				logger.info(`[BLANK] Página ${pageNumber} descartada por ser casi en blanco.`);
-				try { if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath); } catch (e) { /* ignore */ }
+				// quick-OCR exception: detectar orientación, rotar temporalmente y hacer un OCR liviano
+				let keptByQuickOcr = false;
+				try {
+					const angle = await ocrService.detectOrientationWithOSD(imagePath);
+					let rotatedPath = imagePath;
+					let createdRotated = false;
+					if (angle !== null && angle !== 0) {
+						try {
+							rotatedPath = await ocrService.rotateImage(imagePath, angle);
+							createdRotated = true;
+						} catch (rotateErr) {
+							logger.warn(`[BLANK->QUICK OCR] No se pudo rotar página ${pageNumber}: ${rotateErr.message}`);
+							rotatedPath = imagePath;
+						}
+					}
+					// Ejecutar OCR rápido sobre la imagen (rotada si se creó)
+					try {
+						const quick = await ocrService.applyOcrToImage(rotatedPath, tesseractLang, false);
+						const text = (quick && quick.text) ? quick.text : '';
+						const cleaned = text.replace(/\s+/g, '');
+						const MIN_CHARS_FOR_KEEP = 30; // umbral de caracteres no blancos
+						if (cleaned.length >= MIN_CHARS_FOR_KEEP) {
+							keptByQuickOcr = true;
+							imagenesValidas.push({ imagePath, pageNumber });
+							logger.info(`[BLANK->OCR] Página ${pageNumber} conservada por quick-OCR (${cleaned.length} chars).`);
+						}
+					} catch (quickErr) {
+						logger.warn(`[BLANK->QUICK OCR] Error OCR rápido página ${pageNumber}: ${quickErr.message}`);
+					}
+					// limpiar imagen rotada temporal si se creó
+					try {
+						if (createdRotated && rotatedPath && fs.existsSync(rotatedPath)) fs.unlinkSync(rotatedPath);
+					} catch (e) { /* ignore */ }
+				} catch (err) {
+					logger.warn(`[BLANK->QUICK OCR] Error en excepción quick-OCR para página ${pageNumber}: ${err.message}`);
+				}
+
+				if (!keptByQuickOcr) {
+					paginasBlancas.push(pageNumber);
+					logger.info(`[BLANK] Página ${pageNumber} descartada por ser casi en blanco.`);
+					try { if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath); } catch (e) { /* ignore */ }
+				}
 			} else {
 				imagenesValidas.push({ imagePath, pageNumber });
 			}
