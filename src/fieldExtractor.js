@@ -52,9 +52,9 @@ function extractFieldsFromText(text, pag, idioma = 'ESP') {
             /recibo[\s;:]*(\d{8,12})/i
             ],
             departamento: [
-            /dpto[:\s]*(\d{2,3})/i,
-            /Dpto[:\s]*(\d{2,3})/i,
-            /departamento[:\s-]*(\d{2,3})/i
+            // Captura variantes: Dpto, Depto, Dept, Dpt, Beto, Bpto, etc. (errores OCR)
+            /(?:[DB][ep][pt][o]?)[:\s—\-]*([0-9]{2,4})/i,
+            /departamento[:\s—\-]*([0-9]{2,4})/i
             ],
             total: [
             /importe\s*total[^\d]*(\d{1,6}[.,]\d{2})/i,
@@ -79,8 +79,9 @@ function extractFieldsFromText(text, pag, idioma = 'ESP') {
                 /receipt[\s#:\-;]*(\d{8,12})/i
             ],
             departamento: [
-                /dept(?:o|o\.)?[:\s-]*(\d{2,3})/i,
-                /department[:\s-]*(\d{2,3})/i
+                // Captura variantes: Dept, Dpt, Beto, Bpto, etc. (errores OCR)
+                /(?:[DB][ep][pt][o]?)[:\s—\-]*([0-9]{2,4})/i,
+                /department[:\s—\-]*([0-9]{2,4})/i
             ],
             total: [
                 /amount[^\d]*(\d{1,6}[.,]\d{2})/i,
@@ -181,12 +182,12 @@ function extractFieldsFromText(text, pag, idioma = 'ESP') {
         mensajes.push(mensajesError.numeroRecibo);
     }
 
-    // Departamento: tolerar variantes como Dept — 95, Dept—95, Dept 95, Dept: 95, Dept - 95
-    const departamentoRegexRobusto = /(?:Dept\s*[—\-:;,.]?\s*|Departamento\s*[—\-:;,.]?\s*)(\d{1,4})/i;
+    // Departamento: tolerar variantes como Dept — 95, Dept—95, Dept 95, Dept: 95, Dept - 95, Beto: 95, etc.
+    const departamentoRegexRobusto = /(?:[DB][ep][pt][o]?\s*[—\-:;,.]?\s*|Departamento\s*[—\-:;,.]?\s*)(\d{1,4})/i;
     let departamentoMatch = cleanText.match(departamentoRegexRobusto);
     if (!departamentoMatch) {
-        // fallback: buscar solo "Dept" seguido de cualquier separador y número
-        departamentoMatch = cleanText.match(/Dept\s*[—\-:;,.]?\s*(\d{1,4})/i);
+        // fallback: buscar solo "Dept" (o variantes) seguido de cualquier separador y número
+        departamentoMatch = cleanText.match(/(?:[DB][ep][pt][o]?)\s*[—\-:;,.]?\s*(\d{1,4})/i);
     }
     if (departamentoMatch) {
         departamento = departamentoMatch[1].trim();
