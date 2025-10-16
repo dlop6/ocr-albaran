@@ -21,3 +21,9 @@ temp_pdf_base64.txt
 src/temp_first_page.pdf
 temp_results
 docs/planeacion_migracion_python.md
+scripts/results
+.github/copilot-instructions.md
+.env
+docs/informe_ocr.xlsx
+test/temp_test/
+src/utils
