@@ -1,5 +1,4 @@
 # Archivos y carpetas temporales
-src/utils
 temp_pdf_base64.txt
 src/temp_results/
 *.traineddata
