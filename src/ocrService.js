@@ -90,16 +90,26 @@ async function rotateImage(imagePath, angle) {
     const base = path.basename(imagePath, ext);
     const dir = path.dirname(imagePath);
     const rotatedPath = path.join(dir, `${base}_rot${angle}${ext}`);
-    // Usar stream para minimizar uso de disco
-    await new Promise((resolve, reject) => {
-        const readStream = fs.createReadStream(imagePath);
-        const transform = sharp().rotate(angle);
-        const writeStream = fs.createWriteStream(rotatedPath);
-        readStream.pipe(transform).pipe(writeStream);
-        writeStream.on('finish', resolve);
-        writeStream.on('error', reject);
-    });
-    return rotatedPath;
+    // Guard: comprobar metadata y dimensiones mínimas antes de rotar
+    try {
+        const meta = await sharp(imagePath).metadata();
+        const minDim = parseInt(process.env.MIN_IMAGE_DIM || '120', 10);
+        if (!meta || !meta.width || !meta.height) {
+            logger.warn(`[ROTATE GUARD] metadata missing for ${imagePath}, skipping rotate ${angle}`);
+            return imagePath;
+        }
+        if (meta.width < minDim || meta.height < minDim) {
+            logger.warn(`[ROTATE GUARD] image too small (w:${meta.width} h:${meta.height}) for rotate ${angle}, skipping`);
+            return imagePath;
+        }
+
+        // Usar sharp directamente para crear la imagen rotada
+        await sharp(imagePath).rotate(angle).toFile(rotatedPath);
+        return rotatedPath;
+    } catch (err) {
+        logger.warn(`[ROTATE GUARD] failed rotating ${imagePath} by ${angle}: ${err.message}. Using original image.`);
+        return imagePath;
+    }
 }
 
 // Procesa una página: rota y aplica OCR hasta que sea legible
