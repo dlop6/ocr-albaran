@@ -14,6 +14,31 @@ function normalize(str) {
 }
 
 /**
+ * Valida si el texto contiene keywords que indican orientación correcta del documento
+ * @param {string} text - Texto OCR de la página
+ * @param {string} lang - 'spa' o 'eng'
+ * @returns {boolean} true si contiene keywords de documento válido
+ */
+function hasValidOrientation(text, lang) {
+	if (!text || text.length < 10) return false;
+	
+	const normalizedText = normalize(text);
+	
+	if (lang === 'spa') {
+		// Buscar "DETALLES RECIBO" o "DETALLES DE RECIBO" con variantes
+		return /detalles?\s*recibo/i.test(text) || 
+		       /detalles?\s*de\s*recibo/i.test(text) ||
+		       /detalles?\s*del?\s*recibo/i.test(text);
+	} else if (lang === 'eng') {
+		// Buscar "Proof of Receipt" o "Proof of Delivery" con variantes
+		return /proof\s*of\s*receipt/i.test(text) ||
+		       /proof\s*of\s*delivery/i.test(text) ||
+		       /receipt\s*details/i.test(text);
+	}
+	return false;
+}
+
+/**
  * Determina si una página es relevante según palabras clave o regex
  * @param {string} text - Texto OCR de la página
  * @param {Array<string|RegExp>} [keywords] - Palabras clave o regex (opcional)
@@ -80,6 +105,7 @@ function parseDocument(pages) {
 }
 
 module.exports = {
+	hasValidOrientation,
 	isRelevantPage,
 	parsePage,
 	parseDocument

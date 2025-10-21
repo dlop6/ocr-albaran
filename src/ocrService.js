@@ -42,26 +42,9 @@ async function applyOcrToImage(imagePath, lang = "spa", numbersOnly = false) {
         imageTooSmall = true;
         logger.warn(`[OCR] Imagen demasiado pequeña (${metadata.width}x${metadata.height}), se procesa igual: ${imagePath}`);
     }
-    let almostBlank = false;
-    // Detección de página casi en blanco
-    try {
-        const threshold = 240; // valor para considerar "blanco"
-        const img = await sharp(imagePath).greyscale().raw().toBuffer({ resolveWithObject: true });
-        const totalPixels = img.info.width * img.info.height;
-        let whitePixels = 0;
-        for (let i = 0; i < img.data.length; i++) {
-            if (img.data[i] > threshold) whitePixels++;
-        }
-        const percentWhite = (whitePixels / totalPixels) * 100;
-        if (percentWhite > 98) {
-            almostBlank = true;
-            logger.warn(`[OCR] Página casi en blanco (${percentWhite.toFixed(2)}% blanco): ${imagePath}`);
-        }
-    } catch (err) {
-        logger.warn(`[OCR] No se pudo analizar si la página es casi en blanco: ${imagePath}`);
-    }
 
     // Preprocesar imagen antes de OCR de forma conservadora
+    // (blank-check redundante eliminado - ya se hace en index.js)
     // Usar streams para evitar archivos temporales si es posible
     const sharpPipeline = sharp(imagePath)
         .resize({ width: 2000 }) // Resolución moderada
@@ -85,7 +68,7 @@ async function applyOcrToImage(imagePath, lang = "spa", numbersOnly = false) {
     const { data: { text, confidence } } = await Tesseract.recognize(preprocessedBuffer, lang, options);
     // Liberar buffer explícitamente 
     if (global.gc) global.gc();
-    return { text, confidence, imageTooSmall, almostBlank, width: metadata.width, height: metadata.height };
+    return { text, confidence, imageTooSmall, width: metadata.width, height: metadata.height };
 }
 
 // Rota una imagen en múltiplos de 90 grados
@@ -121,60 +104,111 @@ async function rotateImage(imagePath, angle) {
 
 // Procesa una página: rota y aplica OCR hasta que sea legible
 // lang debe ser 'spa' o 'eng' según input
-async function processPageWithOcr(imagePath, lang = "spa") {
-    // Intentar OSD primero
+// quickOcrResult: resultado opcional de quick-OCR para reutilización
+async function processPageWithOcr(imagePath, lang = "spa", quickOcrResult = null) {
+    const { hasValidOrientation } = require('./parser');
+    
+    // OPTIMIZACIÓN 1: Reutilizar resultado de quick-OCR si es válido
+    if (quickOcrResult && quickOcrResult.text && quickOcrResult.text.length > 30) {
+        if (hasValidOrientation(quickOcrResult.text, lang)) {
+            logger.info(`[OCR CACHE] Reutilizando resultado quick-OCR para ${imagePath} (${quickOcrResult.text.length} chars)`);
+            return quickOcrResult;
+        }
+        logger.info(`[OCR CACHE] Quick-OCR no validó keywords, continuando con procesamiento normal...`);
+    }
+
+    // PASO 1: Intentar OSD primero
     let angle = await detectOrientationWithOSD(imagePath);
-    let imgToProcess = imagePath;
-    let triedAngles = [];
-    if (angle !== null && [0, 90, 180, 270].includes(angle)) {
-        triedAngles.push(angle);
-        // Rotar solo si es necesario
-        if (angle !== 0) {
-            imgToProcess = await rotateImage(imagePath, angle);
-        }
-        // OCR general
-        const generalResult = await applyOcrToImage(imgToProcess, lang, false);
-        logger.info(`[OSD] Ángulo detectado: ${angle}`);
-        if (isRelevantPage(generalResult.text)) {
-            if (angle !== 0 && fs.existsSync(imgToProcess)) {
-                fs.unlinkSync(imgToProcess);
-            }
-            return {
-                text: generalResult.text,
-                confidence: generalResult.confidence,
-                angle: angle,
-                osd: true
-            };
-        }
-        if (angle !== 0 && fs.existsSync(imgToProcess)) {
-            fs.unlinkSync(imgToProcess);
+    let rotatedPath = imagePath;
+    let createdRotated = false;
+    
+    if (angle !== null && angle !== 0) {
+        try {
+            rotatedPath = await rotateImage(imagePath, angle);
+            createdRotated = true;
+        } catch (err) {
+            logger.warn(`[OSD] No se pudo rotar imagen: ${err.message}`);
+            rotatedPath = imagePath;
         }
     }
-    // Si OSD falla o no es relevante, rotar por fuerza bruta
-    const fallbackAngles = [0, 90, 180, 270].filter(a => !triedAngles.includes(a));
-    for (const fallbackAngle of fallbackAngles) {
-        let fallbackImg = imagePath;
-        if (fallbackAngle !== 0) {
-            fallbackImg = await rotateImage(imagePath, fallbackAngle);
+
+    // OCR con ángulo detectado por OSD
+    const osdResult = await applyOcrToImage(rotatedPath, lang, false);
+    logger.info(`[OSD] Ángulo detectado: ${angle}°`);
+    
+    // Limpiar imagen rotada temporal inmediatamente
+    if (createdRotated && rotatedPath && fs.existsSync(rotatedPath)) {
+        try { 
+            fs.unlinkSync(rotatedPath); 
+        } catch (e) { 
+            logger.warn(`[CLEANUP] Error eliminando ${rotatedPath}: ${e.message}`);
         }
-        const generalResult = await applyOcrToImage(fallbackImg, lang, false);
-        logger.info(`[Fallback] OCR en ángulo ${fallbackAngle}:`);
-        if (isRelevantPage(generalResult.text)) {
-            if (fallbackAngle !== 0 && fs.existsSync(fallbackImg)) {
-                fs.unlinkSync(fallbackImg);
+    }
+
+    // VALIDACIÓN OSD: Verificar si el ángulo detectado es correcto
+    if (hasValidOrientation(osdResult.text, lang)) {
+        logger.info(`[OSD VALID] Ángulo ${angle}° validado con keywords correctas ✓`);
+        return {
+            text: osdResult.text,
+            confidence: osdResult.confidence,
+            angle: angle || 0,
+            osd: true
+        };
+    }
+
+    // PASO 2: OSD no validó → Fallback inteligente
+    logger.warn(`[OSD INVALID] Ángulo ${angle}° no validó keywords. Iniciando fallback...`);
+    
+    const triedAngles = [angle];
+    const fallbackAngles = [0, 90, 180, 270].filter(a => !triedAngles.includes(a));
+    
+    for (const fallbackAngle of fallbackAngles) {
+        let fallbackPath = imagePath;
+        let createdFallback = false;
+        
+        if (fallbackAngle !== 0) {
+            try {
+                fallbackPath = await rotateImage(imagePath, fallbackAngle);
+                createdFallback = true;
+            } catch (err) {
+                logger.warn(`[FALLBACK] Error rotando a ${fallbackAngle}°: ${err.message}`);
+                continue;
             }
+        }
+
+        const fallbackResult = await applyOcrToImage(fallbackPath, lang, false);
+        
+        // Limpiar imagen rotada temporal inmediatamente
+        if (createdFallback && fallbackPath && fs.existsSync(fallbackPath)) {
+            try { 
+                fs.unlinkSync(fallbackPath); 
+            } catch (e) { 
+                logger.warn(`[CLEANUP] Error eliminando ${fallbackPath}: ${e.message}`);
+            }
+        }
+
+        // Validar con keywords
+        if (hasValidOrientation(fallbackResult.text, lang)) {
+            logger.info(`[FALLBACK VALID] Ángulo ${fallbackAngle}° validado con keywords correctas ✓`);
             return {
-                text: generalResult.text,
-                confidence: generalResult.confidence,
+                text: fallbackResult.text,
+                confidence: fallbackResult.confidence,
                 angle: fallbackAngle,
                 osd: false
             };
         }
-        if (fallbackAngle !== 0 && fs.existsSync(fallbackImg)) {
-            fs.unlinkSync(fallbackImg);
-        }
+        
+        logger.info(`[FALLBACK] Ángulo ${fallbackAngle}° no validó keywords, probando siguiente...`);
     }
-    return null; // Si ningún ángulo es relevante
+
+    // PASO 3: Ningún ángulo validó keywords → devolver mejor resultado (OSD)
+    logger.warn(`[FALLBACK END] Ningún ángulo validó keywords para ${imagePath}. Usando resultado OSD.`);
+    return {
+        text: osdResult.text,
+        confidence: osdResult.confidence,
+        angle: angle || 0,
+        osd: true
+    };
 }
 
 module.exports = {

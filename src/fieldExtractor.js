@@ -183,7 +183,7 @@ function extractFieldsFromText(text, pag, idioma = 'ESP') {
     }
 
     // Departamento: tolerar variantes como Dept — 95, Dept—95, Dept 95, Dept: 95, Dept - 95, Beto: 95, etc.
-    const departamentoRegexRobusto = /(?:[DB][ep][pt][o]?\s*[—\-:;,.]?\s*|Departamento\s*[—\-:;,.]?\s*)(\d{1,4})/i;
+    const departamentoRegexRobusto = /(?:dept(?:o)?|dpto|depto|departamento|dpt|bpto|beto|d\s*e\s*p\s*t(?:o)?)[\s—\-:;,.]*([0-9]{1,4})/i;
     let departamentoMatch = cleanText.match(departamentoRegexRobusto);
     if (!departamentoMatch) {
         // fallback: buscar solo "Dept" (o variantes) seguido de cualquier separador y número

@@ -216,8 +216,11 @@ app.post('/api/process-pdf', async (req, res) => {
 		// 2. Filtrar páginas casi blancas antes de OSD/OCR, con excepción quick-OCR
 		// paginasBlancas: números de páginas descartadas
 		// imagenesValidas: rutas que se enviarán a OCR completo
+		// quickOcrCache: almacenar resultados de quick-OCR para reutilización
 		const paginasBlancas = [];
 		const imagenesValidas = [];
+		const quickOcrCache = {}; // Map: pageNumber -> { text, confidence, angle }
+		
 		for (const { imagePath, pageNumber } of allImagePaths) {
 			if (!imagePath) {
 				paginasBlancas.push(pageNumber);
@@ -233,6 +236,8 @@ app.post('/api/process-pdf', async (req, res) => {
 			if (esBlanca) {
 				// quick-OCR exception: detectar orientación, rotar temporalmente y hacer un OCR liviano
 				let keptByQuickOcr = false;
+				let quickOcrResult = null;
+				
 				try {
 					const angle = await ocrService.detectOrientationWithOSD(imagePath);
 					let rotatedPath = imagePath;
@@ -254,8 +259,16 @@ app.post('/api/process-pdf', async (req, res) => {
 						const MIN_CHARS_FOR_KEEP = 30; // umbral de caracteres no blancos
 						if (cleaned.length >= MIN_CHARS_FOR_KEEP) {
 							keptByQuickOcr = true;
+							// OPTIMIZACIÓN: Guardar resultado completo para reutilizar
+							quickOcrResult = {
+								text: quick.text,
+								confidence: quick.confidence || 0,
+								angle: angle || 0,
+								osd: true
+							};
+							quickOcrCache[pageNumber] = quickOcrResult;
 							imagenesValidas.push({ imagePath, pageNumber });
-							logger.info(`[BLANK->OCR] Página ${pageNumber} conservada por quick-OCR (${cleaned.length} chars).`);
+							logger.info(`[BLANK->OCR] Página ${pageNumber} conservada por quick-OCR (${cleaned.length} chars). Resultado cacheado.`);
 						}
 					} catch (quickErr) {
 						logger.warn(`[BLANK->QUICK OCR] Error OCR rápido página ${pageNumber}: ${quickErr.message}`);
@@ -280,6 +293,7 @@ app.post('/api/process-pdf', async (req, res) => {
 		if (paginasBlancas.length > 0) {
 			logger.info(`[BLANK] Páginas descartadas antes de análisis: ${paginasBlancas.join(', ')}`);
 		}
+		logger.info(`[QUICK-OCR CACHE] ${Object.keys(quickOcrCache).length} páginas con resultado cacheado para reutilización.`);
 
 		// 3. Procesar solo imágenes válidas con OSD/OCR
 		const ocrResults = new Array(pageCount);
@@ -288,7 +302,9 @@ app.post('/api/process-pdf', async (req, res) => {
 			const i = pageNumber - 1;
 			const task = limit(async () => {
 				const startPage = process.hrtime();
-				const ocrResult = await ocrService.processPageWithOcr(imagePath, tesseractLang);
+				// OPTIMIZACIÓN: Pasar resultado de quick-OCR si existe para reutilización
+				const cachedQuickOcr = quickOcrCache[pageNumber] || null;
+				const ocrResult = await ocrService.processPageWithOcr(imagePath, tesseractLang, cachedQuickOcr);
 				const pageElapsed = process.hrtime(startPage);
 				const pageSeconds = pageElapsed[0] + pageElapsed[1] / 1e9;
 				pageProcessDuration.observe(pageSeconds);
