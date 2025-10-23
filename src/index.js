@@ -48,14 +48,19 @@ const limiter = rateLimit({
 
 // ---------- Prometheus metrics ----------
 const pdfProcessDuration = new promClient.Histogram({
-	name: 'pdf_process_duration_seconds',
-	help: 'Duración total del procesamiento de PDF (segundos)',
-	buckets: [1, 5, 10, 20, 30, 60, 120, 300, 600]
+        name: 'pdf_process_duration_seconds',
+        help: 'Duración total del procesamiento de PDF (segundos)',
+        buckets: [1, 5, 10, 20, 30, 60, 120, 300, 600]
 });
 const pageProcessDuration = new promClient.Histogram({
-	name: 'page_process_duration_seconds',
-	help: 'Duración del procesamiento de página (segundos)',
-	buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 30, 60]
+        name: 'page_process_duration_seconds',
+        help: 'Duración del procesamiento de página (segundos)',
+        buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 30, 60]
+});
+const pageRasterDuration = new promClient.Histogram({
+        name: 'page_raster_duration_seconds',
+        help: 'Duración de rasterización de página (segundos)',
+        buckets: [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20]
 });
 const httpRequestCounter = new promClient.Counter({
 	name: 'http_requests_total',
