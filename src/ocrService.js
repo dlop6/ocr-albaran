@@ -347,65 +347,89 @@ async function processPageWithOcr(imagePath, lang = "spa", quickOcrResult = null
     registerAngle(180);
     registerAngle(270);
 
-    let bestCached = null;
-    for (const angle of candidateAngles) {
+    const resultsByAngle = new Map();
+
+    const getOrRunOcrForAngle = async (angle) => {
+        if (resultsByAngle.has(angle)) {
+            return resultsByAngle.get(angle);
+        }
+
         const cached = getCachedOcrResult(imagePath, lang, angle, false);
         if (cached && cached.text) {
-            const normalized = { ...cached, angle, osd: angle === osdAngle, cacheHit: true };
-            if (!bestCached) {
-                bestCached = normalized;
-            }
-            if (hasValidOrientation(cached.text, lang)) {
-                logger.info(`[OCR CACHE] Cache válido encontrado para ${imagePath} a ${angle}°`);
-                return normalized;
-            }
+            const normalizedCached = { ...cached, angle, osd: angle === osdAngle, cacheHit: true };
+            resultsByAngle.set(angle, normalizedCached);
+            return normalizedCached;
         }
-    }
 
-    const preferredAngle = candidateAngles.length > 0 ? candidateAngles[0] : 0;
-    let rotatedPath = imagePath;
-    let createdRotated = false;
+        let rotatedPath = imagePath;
+        let createdRotated = false;
 
-    if (preferredAngle && preferredAngle !== 0) {
-        try {
-            rotatedPath = await rotateImage(imagePath, preferredAngle);
-            createdRotated = rotatedPath !== imagePath;
-        } catch (err) {
-            logger.warn(`[OCR] No se pudo rotar ${imagePath} a ${preferredAngle}°: ${err.message}`);
-            rotatedPath = imagePath;
-            createdRotated = false;
-        }
-    }
-
-    let fullResult = null;
-    try {
-        fullResult = await applyOcrToImage(rotatedPath, lang, false, {
-            angle: preferredAngle,
-            cacheKeyImagePath: imagePath
-        });
-    } finally {
-        if (createdRotated && rotatedPath && rotatedPath !== imagePath) {
+        if (angle && angle !== 0) {
             try {
-                if (fs.existsSync(rotatedPath)) {
-                    fs.unlinkSync(rotatedPath);
-                }
-            } catch (cleanupErr) {
-                logger.warn(`[CLEANUP] Error eliminando ${rotatedPath}: ${cleanupErr.message}`);
+                rotatedPath = await rotateImage(imagePath, angle);
+                createdRotated = rotatedPath !== imagePath;
+            } catch (err) {
+                logger.warn(`[OCR] No se pudo rotar ${imagePath} a ${angle}°: ${err.message}`);
+                rotatedPath = imagePath;
+                createdRotated = false;
             }
+        }
+
+        let ocrResult = null;
+        try {
+            ocrResult = await applyOcrToImage(rotatedPath, lang, false, {
+                angle,
+                cacheKeyImagePath: imagePath
+            });
+        } finally {
+            if (createdRotated && rotatedPath && rotatedPath !== imagePath) {
+                try {
+                    if (fs.existsSync(rotatedPath)) {
+                        fs.unlinkSync(rotatedPath);
+                    }
+                } catch (cleanupErr) {
+                    logger.warn(`[CLEANUP] Error eliminando ${rotatedPath}: ${cleanupErr.message}`);
+                }
+            }
+        }
+
+        const normalized = ocrResult ? { ...ocrResult, angle, osd: angle === osdAngle } : null;
+        if (normalized) {
+            resultsByAngle.set(angle, normalized);
+        }
+        return normalized;
+    };
+
+    let firstResult = null;
+    for (const angle of candidateAngles) {
+        const result = await getOrRunOcrForAngle(angle);
+        if (!result || !result.text) {
+            continue;
+        }
+
+        if (!firstResult) {
+            firstResult = result;
+        }
+
+        if (hasValidOrientation(result.text, lang)) {
+            if (result.cacheHit) {
+                logger.info(`[OCR CACHE] Cache válido encontrado para ${imagePath} a ${angle}°`);
+            } else {
+                logger.info(`[OCR] OCR válido obtenido para ${imagePath} a ${angle}°`);
+            }
+            return result;
         }
     }
 
-    const normalizedFull = fullResult ? { ...fullResult, angle: preferredAngle, osd: preferredAngle === osdAngle } : null;
-
-    if (normalizedFull && normalizedFull.text && hasValidOrientation(normalizedFull.text, lang)) {
-        return normalizedFull;
+    if (firstResult) {
+        return firstResult;
     }
 
-    if (bestCached && hasValidOrientation(bestCached.text, lang)) {
-        return bestCached;
+    if (quickOcrResult && quickOcrResult.text) {
+        return { ...quickOcrResult, cacheHit: quickOcrResult.cacheHit || false };
     }
 
-    return normalizedFull || bestCached || null;
+    return null;
 }
 
 module.exports = {
