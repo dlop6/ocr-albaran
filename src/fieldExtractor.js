@@ -1,7 +1,18 @@
-const { applyOcrToImage } = require('./ocrService');
-const sharp = require('sharp');
-const fs = require('fs');
-const path = require('path');
+const logger = require('./logger');
+
+const FIELD_EXTRACTOR_LOG_MODE = (process.env.FIELD_EXTRACTOR_LOG_MODE || '').toLowerCase();
+
+function emitDebugLog(message, extra) {
+    if (!FIELD_EXTRACTOR_LOG_MODE || FIELD_EXTRACTOR_LOG_MODE === 'off') {
+        return;
+    }
+    const level = FIELD_EXTRACTOR_LOG_MODE === 'info' ? 'info' : 'debug';
+    if (extra !== undefined) {
+        logger.log({ level, message: `[FIELD_EXTRACTOR] ${message}`, extra });
+    } else {
+        logger.log({ level, message: `[FIELD_EXTRACTOR] ${message}` });
+    }
+}
 
 
 /**
@@ -24,10 +35,12 @@ function extractFieldsFromText(text, pag, idioma = 'ESP') {
     const cleanText = text.replace(/[\u200B-\u200D\uFEFF\u00A0\t\r]/g, ' ');
 
     // DEBUG: Log del texto OCR para análisis
-    console.log(`=== DEBUG PÁGINA ${pag} ===`);
-    console.log('Texto OCR completo:');
-    console.log(text);
-    console.log('=== FIN DEBUG ===');
+    emitDebugLog(`PÁGINA ${pag} procesada`, { page: pag });
+    emitDebugLog(`Texto OCR completo página ${pag}`, {
+        page: pag,
+        textLength: cleanText.length,
+        textPreview: cleanText.slice(0, 500)
+    });
     
     // Patrones robustos para cada campo, según idioma
     let patterns;

@@ -32,6 +32,103 @@ async function detectOrientationWithOSD(imagePath) {
     }
 }
 
+/**
+ * Preprocesa la imagen teniendo en cuenta el DPI original y genera buffers
+ * compartidos (normalizado y binarizado) junto con estadísticas para detección
+ * de páginas en blanco.
+ *
+ * @param {string} imagePath
+ * @param {object} [options]
+ * @param {number} [options.targetDpi]
+ * @param {number} [options.minScale]
+ * @param {number} [options.maxScale]
+ * @param {number} [options.binaryThreshold]
+ * @returns {Promise<object>}
+ */
+async function preprocessImage(imagePath, options = {}) {
+    const {
+        targetDpi = Number(process.env.OCR_TARGET_DPI || 300),
+        minScale = Number(process.env.OCR_MIN_SCALE || 0.7),
+        maxScale = Number(process.env.OCR_MAX_SCALE || 3.0),
+        binaryThreshold = Number(options.binaryThreshold ?? process.env.OCR_BINARY_THRESHOLD ?? 245)
+    } = options;
+
+    const base = sharp(imagePath, { sequentialRead: true });
+    const metadata = await base.metadata();
+    const width = metadata.width || null;
+    const height = metadata.height || null;
+    const density = metadata.density && isFinite(metadata.density) && metadata.density > 0
+        ? metadata.density
+        : null;
+
+    let scale = 1;
+    if (density) {
+        scale = targetDpi / density;
+    }
+    if (!isFinite(scale) || scale <= 0) {
+        scale = 1;
+    }
+    scale = Math.min(maxScale, Math.max(minScale, scale));
+
+    let resizeWidth = null;
+    if (width) {
+        resizeWidth = Math.max(1, Math.round(width * scale));
+    }
+
+    let pipeline = base.clone();
+    if (resizeWidth && width) {
+        pipeline = pipeline.resize({
+            width: resizeWidth,
+            fit: 'inside',
+            withoutEnlargement: false
+        });
+    }
+
+    pipeline = pipeline
+        .greyscale()
+        .gamma()
+        .normalize()
+        .sharpen({ sigma: 1.0 })
+        .modulate({ brightness: 1.05 })
+        .png();
+
+    const { data: processedBuffer, info: processedInfo } = await pipeline.toBuffer({ resolveWithObject: true });
+
+    const binarizedPipeline = sharp(processedBuffer, { sequentialRead: true })
+        .threshold(binaryThreshold)
+        .png();
+
+    const [binaryResult, stats] = await Promise.all([
+        binarizedPipeline.clone().toBuffer({ resolveWithObject: true }),
+        binarizedPipeline.clone().stats()
+    ]);
+
+    const imageTooSmall = Boolean(width && height && (width < 10 || height < 10));
+
+    return {
+        originalPath: imagePath,
+        metadata,
+        target: {
+            dpi: targetDpi,
+            density,
+            scale,
+            width: processedInfo.width,
+            height: processedInfo.height
+        },
+        processed: {
+            buffer: processedBuffer,
+            info: processedInfo
+        },
+        binarized: {
+            buffer: binaryResult.data,
+            info: binaryResult.info,
+            stats,
+            threshold: binaryThreshold
+        },
+        imageTooSmall
+    };
+}
+
 
 // lang debe ser 'spa' o 'eng' según input, nunca autodetectar ni usar ambos
 async function applyOcrToImage(imagePath, lang = "spa", numbersOnly = false) {
@@ -115,7 +212,8 @@ async function rotateImage(imagePath, angle) {
 // Procesa una página: rota y aplica OCR hasta que sea legible
 // lang debe ser 'spa' o 'eng' según input
 // quickOcrResult: resultado opcional de quick-OCR para reutilización
-async function processPageWithOcr(imagePath, lang = "spa", quickOcrResult = null) {
+// preprocessResult: resultado de preprocesado compartido (sin rotación)
+async function processPageWithOcr(imagePath, lang = "spa", quickOcrResult = null, preprocessResult = null) {
     const { hasValidOrientation } = require('./parser');
     
     // OPTIMIZACIÓN 1: Reutilizar resultado de quick-OCR si es válido
