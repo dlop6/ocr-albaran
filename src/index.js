@@ -230,41 +230,9 @@ app.post('/api/process-pdf', async (req, res) => {
 			}
 
 			if (esBlanca) {
-                                // quick-OCR exception: detectar orientación, rotar temporalmente y hacer un OCR liviano
-                                let keptByQuickOcr = false;
-                                let quickOcrResult = null;
-                                const MIN_CHARS_FOR_KEEP = 30; // umbral de caracteres no blancos
-
-                                // Intentar reutilizar OCR cacheado antes de ejecutar uno nuevo
-                                try {
-                                        for (const cachedAngle of [0, 90, 180, 270]) {
-                                                const cached = ocrService.getCachedOcrResult(imagePath, tesseractLang, cachedAngle, false);
-                                                if (cached && cached.text) {
-                                                        const cleanedCached = cached.text.replace(/\s+/g, '');
-                                                        if (cleanedCached.length >= MIN_CHARS_FOR_KEEP) {
-                                                                keptByQuickOcr = true;
-                                                                const angle = typeof cached.angle === 'number' ? cached.angle : cachedAngle;
-                                                                quickOcrResult = {
-                                                                        text: cached.text,
-                                                                        confidence: cached.confidence || 0,
-                                                                        angle,
-                                                                        osd: cached.osd || false,
-                                                                        cacheHit: true
-                                                                };
-                                                                quickOcrCache[pageNumber] = quickOcrResult;
-                                                                imagenesValidas.push({ imagePath, pageNumber });
-                                                                logger.info(`[BLANK->OCR] Página ${pageNumber} conservada por OCR cacheado (${cleanedCached.length} chars).`);
-                                                                break;
-                                                        }
-                                                }
-                                        }
-                                } catch (cacheErr) {
-                                        logger.warn(`[BLANK->CACHE] Error revisando caché para página ${pageNumber}: ${cacheErr.message}`);
-                                }
-
-                                if (keptByQuickOcr) {
-                                        continue;
-                                }
+				// quick-OCR exception: detectar orientación, rotar temporalmente y hacer un OCR liviano
+				let keptByQuickOcr = false;
+				let quickOcrResult = null;
 				
 				try {
 					const angle = await ocrService.detectOrientationWithOSD(imagePath);
@@ -279,31 +247,28 @@ app.post('/api/process-pdf', async (req, res) => {
 							rotatedPath = imagePath;
 						}
 					}
-                                        // Ejecutar OCR rápido sobre la imagen (rotada si se creó)
-                                        try {
-                                                const quick = await ocrService.applyOcrToImage(rotatedPath, tesseractLang, false, {
-                                                        angle: angle || 0,
-                                                        cacheKeyImagePath: imagePath
-                                                });
-                                                const text = (quick && quick.text) ? quick.text : '';
-                                                const cleaned = text.replace(/\s+/g, '');
-                                                if (cleaned.length >= MIN_CHARS_FOR_KEEP) {
-                                                        keptByQuickOcr = true;
-                                                        // OPTIMIZACIÓN: Guardar resultado completo para reutilizar
-                                                        quickOcrResult = {
-                                                                text: quick.text,
-                                                                confidence: quick.confidence || 0,
-                                                                angle: angle || 0,
-                                                                osd: true,
-                                                                cacheHit: quick.cacheHit || false
-                                                        };
-                                                        quickOcrCache[pageNumber] = quickOcrResult;
-                                                        imagenesValidas.push({ imagePath, pageNumber });
-                                                        logger.info(`[BLANK->OCR] Página ${pageNumber} conservada por quick-OCR ${quick.cacheHit ? 'cacheado' : 'fresh'} (${cleaned.length} chars). Resultado cacheado.`);
-                                                }
-                                        } catch (quickErr) {
-                                                logger.warn(`[BLANK->QUICK OCR] Error OCR rápido página ${pageNumber}: ${quickErr.message}`);
-                                        }
+					// Ejecutar OCR rápido sobre la imagen (rotada si se creó)
+					try {
+						const quick = await ocrService.applyOcrToImage(rotatedPath, tesseractLang, false);
+						const text = (quick && quick.text) ? quick.text : '';
+						const cleaned = text.replace(/\s+/g, '');
+						const MIN_CHARS_FOR_KEEP = 30; // umbral de caracteres no blancos
+						if (cleaned.length >= MIN_CHARS_FOR_KEEP) {
+							keptByQuickOcr = true;
+							// OPTIMIZACIÓN: Guardar resultado completo para reutilizar
+							quickOcrResult = {
+								text: quick.text,
+								confidence: quick.confidence || 0,
+								angle: angle || 0,
+								osd: true
+							};
+							quickOcrCache[pageNumber] = quickOcrResult;
+							imagenesValidas.push({ imagePath, pageNumber });
+							logger.info(`[BLANK->OCR] Página ${pageNumber} conservada por quick-OCR (${cleaned.length} chars). Resultado cacheado.`);
+						}
+					} catch (quickErr) {
+						logger.warn(`[BLANK->QUICK OCR] Error OCR rápido página ${pageNumber}: ${quickErr.message}`);
+					}
 					// limpiar imagen rotada temporal si se creó
 					try {
 						if (createdRotated && rotatedPath && fs.existsSync(rotatedPath)) fs.unlinkSync(rotatedPath);
