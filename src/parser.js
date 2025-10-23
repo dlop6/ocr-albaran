@@ -6,12 +6,22 @@
  * @returns {string}
  */
 function normalize(str) {
-	return str
-		.toLowerCase()
-		.normalize("NFD")
-		.replace(/[\u0300-\u036f]/g, "") // quita tildes
-		.replace(/[^a-z0-9\s]/g, ""); // solo letras, números y espacios
+        if (!str) return '';
+        return str
+                .toLowerCase()
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '') // quita tildes
+                .replace(/[^a-z0-9\s]/g, ''); // solo letras, números y espacios
 }
+
+const DEFAULT_KEYWORDS = [
+        /detalles?\s*recibo/i,
+        /detalles?\s*de\s*recibo/i,
+        /detalles?\s*del?\s*recibo/i,
+        /proof\s*of\s*receipt/i,
+        /proof\s*of\s*delivery/i,
+        /receipt\s*details/i
+];
 
 /**
  * Valida si el texto contiene keywords que indican orientación correcta del documento
@@ -45,21 +55,17 @@ function hasValidOrientation(text, lang) {
  * @returns {boolean}
  */
 function isRelevantPage(text, keywords) {
-	const defaultKeywords = [
-		/detalles?\s*recibo/i,
-		/proof\s*of\s*receipt/i,
-		/proof\s*of\s*delivery/i
-	];
-	const patterns = keywords && keywords.length > 0 ? keywords : defaultKeywords;
-	const normText = normalize(text);
-	return patterns.some(kw => {
-		if (kw instanceof RegExp) {
-			return kw.test(text) || kw.test(normText);
-		} else {
-			const normKw = normalize(kw);
-			return normText.includes(normKw);
-		}
-	});
+        if (!text) return false;
+        const patterns = Array.isArray(keywords) && keywords.length > 0 ? keywords : DEFAULT_KEYWORDS;
+        const normText = normalize(text);
+        return patterns.some(kw => {
+                if (kw instanceof RegExp) {
+                        return kw.test(text) || kw.test(normText);
+                } else {
+                        const normKw = normalize(String(kw));
+                        return normText.includes(normKw);
+                }
+        });
 }
 
 /**
@@ -70,10 +76,10 @@ function isRelevantPage(text, keywords) {
  * @returns {object|null}
  */
 function parsePage(text, pageNumber, keywords) {
-	if (isRelevantPage(text, keywords)) {
-		return { pageNumber, text };
-	}
-	return null;
+        if (isRelevantPage(text, keywords)) {
+                return { pageNumber, text };
+        }
+        return null;
 }
 
 /**
@@ -83,30 +89,16 @@ function parsePage(text, pageNumber, keywords) {
  * @returns {Array<{pageNumber: number, text: string}>}
  */
 function parseDocument(pages, keywords) {
-	return pages
-		.map(page => parsePage(page.text, page.pageNumber, keywords))
-		.filter(result => result !== null);
-}
-
-// Procesa una página: si es relevante, devuelve el texto y el número de página
-function parsePage(text, pageNumber) {
-	if (isRelevantPage(text)) {
-		return { pageNumber, text };
-	}
-	return null;
-}
-
-// Procesa todas las páginas y devuelve solo las relevantes
-function parseDocument(pages) {
-	// pages: array de { text, pageNumber }
-	return pages
-		.map(page => parsePage(page.text, page.pageNumber))
-		.filter(result => result !== null);
+        if (!Array.isArray(pages)) return [];
+        return pages
+                .map(page => parsePage(page.text, page.pageNumber, keywords))
+                .filter(result => result !== null);
 }
 
 module.exports = {
-	hasValidOrientation,
-	isRelevantPage,
-	parsePage,
-	parseDocument
+        hasValidOrientation,
+        isRelevantPage,
+        parsePage,
+        parseDocument,
+        DEFAULT_KEYWORDS
 };

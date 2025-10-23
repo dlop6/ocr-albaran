@@ -127,11 +127,6 @@ app.get('/metrics', async (req, res) => {
 	}
 });
 
-// ---------- Configuración OCR/concurrency ----------
-const DEFAULT_CONCURRENCY = process.env.OCR_CONCURRENCY
-	? parseInt(process.env.OCR_CONCURRENCY, 10)
-	: 5;
-
 // ---------- Endpoint de procesamiento de PDF ----------
 app.post('/api/process-pdf', async (req, res) => {
 	const { pdfBase64, idioma, albaranesEsperados } = req.body;
@@ -328,11 +323,8 @@ app.post('/api/process-pdf', async (req, res) => {
 		for (const pageNumber of paginasBlancas) {
 			ocrResults[pageNumber - 1] = null;
 		}
-		// Esperar a que todos los OCR terminen
-		await Promise.all(tasks);
-		
-		// Esperar a que todos los OCR terminen
-		await Promise.all(tasks);
+                // Esperar a que todos los OCR terminen
+                await Promise.all(tasks);
 
 		const elapsedTotal = process.hrtime(startTotal);
 		const elapsedSeconds = elapsedTotal[0] + elapsedTotal[1] / 1e9;
