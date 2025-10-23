@@ -44,14 +44,19 @@ const limiter = rateLimit({
 
 // ---------- Prometheus metrics ----------
 const pdfProcessDuration = new promClient.Histogram({
-	name: 'pdf_process_duration_seconds',
-	help: 'Duración total del procesamiento de PDF (segundos)',
-	buckets: [1, 5, 10, 20, 30, 60, 120, 300, 600]
+        name: 'pdf_process_duration_seconds',
+        help: 'Duración total del procesamiento de PDF (segundos)',
+        buckets: [1, 5, 10, 20, 30, 60, 120, 300, 600]
 });
 const pageProcessDuration = new promClient.Histogram({
-	name: 'page_process_duration_seconds',
-	help: 'Duración del procesamiento de página (segundos)',
-	buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 30, 60]
+        name: 'page_process_duration_seconds',
+        help: 'Duración del procesamiento de página (segundos)',
+        buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 30, 60]
+});
+const pageRasterDuration = new promClient.Histogram({
+        name: 'page_raster_duration_seconds',
+        help: 'Duración de rasterización de página (segundos)',
+        buckets: [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20]
 });
 const httpRequestCounter = new promClient.Counter({
 	name: 'http_requests_total',
@@ -168,9 +173,10 @@ app.post('/api/process-pdf', async (req, res) => {
 
 	const tempPdfPath = path.join(os.tmpdir(), 'temp.pdf');
 	const outputDir = path.join(os.tmpdir(), 'temp_images');
-	let imagePaths = [];
-	let pageCount = 0;
-	let pdfSizeMB = 0;
+        let imagePaths = [];
+        let pageCount = 0;
+        let pdfSizeMB = 0;
+        let cleanupNeeded = false;
 
 	try {
 		const pdfBuffer = Buffer.from(pdfBase64, 'base64');
@@ -195,114 +201,25 @@ app.post('/api/process-pdf', async (req, res) => {
 			throw new Error(`PDF tiene ${pageCount} páginas, excede el límite de 60.`);
 		}
 
-		// Extraer páginas a imágenes (pdfService.extractPagesAsImages debe crear outputDir)
 		const startTotal = process.hrtime();
 		const limit = concurrencyLimit;
-		let allImagePaths = [];
-		// 1. Obtener todas las rutas de imágenes y asociar con número de página
-		if (typeof pdfService.extractPagesAsImagesStream === 'function') {
-			let pageIndex = 0;
-			for await (const imagePath of pdfService.extractPagesAsImagesStream(tempPdfPath, outputDir, pageCount)) {
-				allImagePaths.push({ imagePath, pageNumber: pageIndex + 1 });
-				pageIndex++;
-			}
-		} else {
-			imagePaths = await pdfService.extractPagesAsImages(tempPdfPath, outputDir, pageCount);
-			for (let i = 0; i < imagePaths.length; i++) {
-				allImagePaths.push({ imagePath: imagePaths[i], pageNumber: i + 1 });
-			}
-		}
-
-		// 2. Filtrar páginas casi blancas antes de OSD/OCR, con excepción quick-OCR
-		// paginasBlancas: números de páginas descartadas
-		// imagenesValidas: rutas que se enviarán a OCR completo
-		// quickOcrCache: almacenar resultados de quick-OCR para reutilización
 		const paginasBlancas = [];
-		const imagenesValidas = [];
-		const quickOcrCache = {}; // Map: pageNumber -> { text, confidence, angle }
-		
-		for (const { imagePath, pageNumber } of allImagePaths) {
-			if (!imagePath) {
-				paginasBlancas.push(pageNumber);
-				continue;
-			}
-			let esBlanca = false;
-			try {
-				esBlanca = await isImageBlank(imagePath);
-			} catch (err) {
-				logger.warn(`[BLANK DETECTION] Error analizando página ${pageNumber}: ${err.message}`);
-			}
-
-			if (esBlanca) {
-				// quick-OCR exception: detectar orientación, rotar temporalmente y hacer un OCR liviano
-				let keptByQuickOcr = false;
-				let quickOcrResult = null;
-				
-				try {
-					const angle = await ocrService.detectOrientationWithOSD(imagePath);
-					let rotatedPath = imagePath;
-					let createdRotated = false;
-					if (angle !== null && angle !== 0) {
-						try {
-							rotatedPath = await ocrService.rotateImage(imagePath, angle);
-							createdRotated = true;
-						} catch (rotateErr) {
-							logger.warn(`[BLANK->QUICK OCR] No se pudo rotar página ${pageNumber}: ${rotateErr.message}`);
-							rotatedPath = imagePath;
-						}
-					}
-					// Ejecutar OCR rápido sobre la imagen (rotada si se creó)
-					try {
-						const quick = await ocrService.applyOcrToImage(rotatedPath, tesseractLang, false);
-						const text = (quick && quick.text) ? quick.text : '';
-						const cleaned = text.replace(/\s+/g, '');
-						const MIN_CHARS_FOR_KEEP = 30; // umbral de caracteres no blancos
-						if (cleaned.length >= MIN_CHARS_FOR_KEEP) {
-							keptByQuickOcr = true;
-							// OPTIMIZACIÓN: Guardar resultado completo para reutilizar
-							quickOcrResult = {
-								text: quick.text,
-								confidence: quick.confidence || 0,
-								angle: angle || 0,
-								osd: true
-							};
-							quickOcrCache[pageNumber] = quickOcrResult;
-							imagenesValidas.push({ imagePath, pageNumber });
-							logger.info(`[BLANK->OCR] Página ${pageNumber} conservada por quick-OCR (${cleaned.length} chars). Resultado cacheado.`);
-						}
-					} catch (quickErr) {
-						logger.warn(`[BLANK->QUICK OCR] Error OCR rápido página ${pageNumber}: ${quickErr.message}`);
-					}
-					// limpiar imagen rotada temporal si se creó
-					try {
-						if (createdRotated && rotatedPath && fs.existsSync(rotatedPath)) fs.unlinkSync(rotatedPath);
-					} catch (e) { /* ignore */ }
-				} catch (err) {
-					logger.warn(`[BLANK->QUICK OCR] Error en excepción quick-OCR para página ${pageNumber}: ${err.message}`);
-				}
-
-				if (!keptByQuickOcr) {
-					paginasBlancas.push(pageNumber);
-					logger.info(`[BLANK] Página ${pageNumber} descartada por ser casi en blanco.`);
-					try { if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath); } catch (e) { /* ignore */ }
-				}
-			} else {
-				imagenesValidas.push({ imagePath, pageNumber });
-			}
-		}
-		if (paginasBlancas.length > 0) {
-			logger.info(`[BLANK] Páginas descartadas antes de análisis: ${paginasBlancas.join(', ')}`);
-		}
-		logger.info(`[QUICK-OCR CACHE] ${Object.keys(quickOcrCache).length} páginas con resultado cacheado para reutilización.`);
-
-		// 3. Procesar solo imágenes válidas con OSD/OCR
+		const quickOcrCache = {};
 		const ocrResults = new Array(pageCount);
-		const tasks = [];
-		for (const { imagePath, pageNumber } of imagenesValidas) {
+		const ocrTasks = [];
+		let imagenesValidasCount = 0;
+
+		const markPageAsBlank = (pageNumber) => {
+			if (!paginasBlancas.includes(pageNumber)) {
+				paginasBlancas.push(pageNumber);
+			}
+			ocrResults[pageNumber - 1] = null;
+		};
+
+		const scheduleOcr = (imagePath, pageNumber) => {
 			const i = pageNumber - 1;
 			const task = limit(async () => {
 				const startPage = process.hrtime();
-				// OPTIMIZACIÓN: Pasar resultado de quick-OCR si existe para reutilización
 				const cachedQuickOcr = quickOcrCache[pageNumber] || null;
 				const ocrResult = await ocrService.processPageWithOcr(imagePath, tesseractLang, cachedQuickOcr);
 				const pageElapsed = process.hrtime(startPage);
@@ -322,18 +239,110 @@ app.post('/api/process-pdf', async (req, res) => {
 				}
 				try { if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath); } catch (e) { /* ignore */ }
 			});
-			tasks.push(task);
-		}
-		// Las páginas blancas quedan como null en ocrResults
-		for (const pageNumber of paginasBlancas) {
-			ocrResults[pageNumber - 1] = null;
-		}
-		// Esperar a que todos los OCR terminen
-		await Promise.all(tasks);
-		
-		// Esperar a que todos los OCR terminen
-		await Promise.all(tasks);
+			ocrTasks.push(task);
+			imagenesValidasCount++;
+		};
 
+		const processPageEntry = async (imagePath, pageNumber) => {
+			if (!imagePath) {
+				logger.warn(`[RASTER] No se generó imagen para la página ${pageNumber}. Marcando como descartada.`);
+				markPageAsBlank(pageNumber);
+				return;
+			}
+
+			let esBlanca = false;
+			try {
+				esBlanca = await isImageBlank(imagePath);
+			} catch (err) {
+				logger.warn(`[BLANK DETECTION] Error analizando página ${pageNumber}: ${err.message}`);
+			}
+
+			if (esBlanca) {
+				let keptByQuickOcr = false;
+
+				try {
+					const angle = await ocrService.detectOrientationWithOSD(imagePath);
+					let rotatedPath = imagePath;
+					let createdRotated = false;
+					if (angle !== null && angle !== 0) {
+						try {
+							rotatedPath = await ocrService.rotateImage(imagePath, angle);
+							createdRotated = true;
+						} catch (rotateErr) {
+							logger.warn(`[BLANK->QUICK OCR] No se pudo rotar página ${pageNumber}: ${rotateErr.message}`);
+							rotatedPath = imagePath;
+						}
+					}
+					try {
+						const quick = await ocrService.applyOcrToImage(rotatedPath, tesseractLang, false);
+						const text = (quick && quick.text) ? quick.text : '';
+						const cleaned = text.replace(/\s+/g, '');
+						const MIN_CHARS_FOR_KEEP = 30;
+						if (cleaned.length >= MIN_CHARS_FOR_KEEP) {
+							keptByQuickOcr = true;
+							quickOcrCache[pageNumber] = {
+								text: quick.text,
+								confidence: quick.confidence || 0,
+								angle: angle || 0,
+								osd: true
+							};
+							logger.info(`[BLANK->OCR] Página ${pageNumber} conservada por quick-OCR (${cleaned.length} chars). Resultado cacheado.`);
+						}
+					} catch (quickErr) {
+						logger.warn(`[BLANK->QUICK OCR] Error OCR rápido página ${pageNumber}: ${quickErr.message}`);
+					}
+					try {
+						if (rotatedPath !== imagePath && fs.existsSync(rotatedPath)) {
+							fs.unlinkSync(rotatedPath);
+						}
+					} catch (e) { /* ignore */ }
+				} catch (err) {
+					logger.warn(`[BLANK->QUICK OCR] Error en excepción quick-OCR para página ${pageNumber}: ${err.message}`);
+				}
+
+				if (!keptByQuickOcr) {
+					markPageAsBlank(pageNumber);
+					logger.info(`[BLANK] Página ${pageNumber} descartada por ser casi en blanco.`);
+					try { if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath); } catch (e) { /* ignore */ }
+					return;
+				}
+			}
+
+			scheduleOcr(imagePath, pageNumber);
+		};
+
+                if (typeof pdfService.extractPagesAsImagesStream === 'function') {
+                        cleanupNeeded = true;
+			let lastPageNumber = 0;
+			for await (const pageInfo of pdfService.extractPagesAsImagesStream(tempPdfPath, outputDir, pageCount, { pdfBuffer })) {
+				const pageNumber = (pageInfo && pageInfo.pageNumber) ? pageInfo.pageNumber : (lastPageNumber + 1);
+				lastPageNumber = pageNumber;
+				if (pageInfo && typeof pageInfo.rasterTimeSeconds === 'number' && pageInfo.rasterTimeSeconds > 0) {
+					pageRasterDuration.observe(pageInfo.rasterTimeSeconds);
+				}
+				if (pageInfo && pageInfo.fallback) {
+					logger.debug(`[RASTER] Página ${pageNumber} generada mediante fallback.`);
+				}
+				if (pageInfo && pageInfo.error) {
+					logger.warn(`[RASTER] Página ${pageNumber} reportó incidencias de rasterización: ${pageInfo.error.message || pageInfo.error}`);
+				}
+				await processPageEntry(pageInfo ? pageInfo.imagePath : null, pageNumber);
+			}
+		} else {
+			imagePaths = await pdfService.extractPagesAsImages(tempPdfPath, outputDir, pageCount, { pdfBuffer });
+			cleanupNeeded = Array.isArray(imagePaths) && imagePaths.length > 0;
+			for (let i = 0; i < imagePaths.length; i++) {
+				await processPageEntry(imagePaths[i], i + 1);
+			}
+		}
+
+		if (paginasBlancas.length > 0) {
+			logger.info(`[BLANK] Páginas descartadas antes de análisis: ${paginasBlancas.join(', ')}`);
+		}
+		logger.info(`[QUICK-OCR CACHE] ${Object.keys(quickOcrCache).length} páginas con resultado cacheado para reutilización.`);
+
+		await Promise.all(ocrTasks);
+		logger.info(`[RASTER] ${imagenesValidasCount} páginas enviadas a OCR completo.`);
 		const elapsedTotal = process.hrtime(startTotal);
 		const elapsedSeconds = elapsedTotal[0] + elapsedTotal[1] / 1e9;
 		pdfProcessDuration.observe(elapsedSeconds);
@@ -400,10 +409,10 @@ app.post('/api/process-pdf', async (req, res) => {
 		return res.status(500).json({ error: err.message || 'Error processing PDF' });
 	} finally {
 		// Limpieza de recursos temporales
-		try {
-			if (Array.isArray(imagePaths) && imagePaths.length > 0 && typeof pdfService.cleanupTempImages === 'function') {
-				await pdfService.cleanupTempImages(outputDir);
-			} else if (fs.existsSync(outputDir)) {
+                try {
+                        if (cleanupNeeded && typeof pdfService.cleanupTempImages === 'function') {
+                                pdfService.cleanupTempImages(outputDir);
+                        } else if (fs.existsSync(outputDir)) {
 				// fallback: intentar eliminar archivos dentro de outputDir
 				fs.readdir(outputDir, (err, files) => {
 					if (!err && Array.isArray(files)) {
