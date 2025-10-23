@@ -217,23 +217,35 @@ app.post('/api/process-pdf', async (req, res) => {
 		// paginasBlancas: números de páginas descartadas
 		// imagenesValidas: rutas que se enviarán a OCR completo
 		// quickOcrCache: almacenar resultados de quick-OCR para reutilización
-		const paginasBlancas = [];
-		const imagenesValidas = [];
-		const quickOcrCache = {}; // Map: pageNumber -> { text, confidence, angle }
+                const paginasBlancas = [];
+                const imagenesValidas = [];
+                const quickOcrCache = {}; // Map: pageNumber -> { text, confidence, angle }
+                const preprocessCache = new Map(); // pageNumber -> preprocess result
 		
 		for (const { imagePath, pageNumber } of allImagePaths) {
-			if (!imagePath) {
-				paginasBlancas.push(pageNumber);
-				continue;
-			}
-			let esBlanca = false;
-			try {
-				esBlanca = await isImageBlank(imagePath);
-			} catch (err) {
-				logger.warn(`[BLANK DETECTION] Error analizando página ${pageNumber}: ${err.message}`);
-			}
+                        if (!imagePath) {
+                                paginasBlancas.push(pageNumber);
+                                continue;
+                        }
+                        let preprocessResult = null;
+                        try {
+                                preprocessResult = await ocrService.preprocessImage(imagePath);
+                                preprocessCache.set(pageNumber, preprocessResult);
+                        } catch (prepErr) {
+                                logger.warn(`[PREPROCESS] Error preprocesando página ${pageNumber}: ${prepErr.message}`);
+                        }
+                        let esBlanca = false;
+                        try {
+                                if (preprocessResult) {
+                                        esBlanca = await isImageBlank(preprocessResult);
+                                } else {
+                                        esBlanca = await isImageBlank(imagePath);
+                                }
+                        } catch (err) {
+                                logger.warn(`[BLANK DETECTION] Error analizando página ${pageNumber}: ${err.message}`);
+                        }
 
-			if (esBlanca) {
+                        if (esBlanca) {
 				// quick-OCR exception: detectar orientación, rotar temporalmente y hacer un OCR liviano
 				let keptByQuickOcr = false;
 				let quickOcrResult = null;
@@ -252,22 +264,24 @@ app.post('/api/process-pdf', async (req, res) => {
 						}
 					}
 					// Ejecutar OCR rápido sobre la imagen (rotada si se creó)
-					try {
-						const quick = await ocrService.applyOcrToImage(rotatedPath, tesseractLang, false);
+                                        try {
+                                                const preprocessForQuick = angle === 0 ? preprocessResult : null;
+                                                const quick = await ocrService.applyOcrToImage(rotatedPath, tesseractLang, false, preprocessForQuick);
 						const text = (quick && quick.text) ? quick.text : '';
 						const cleaned = text.replace(/\s+/g, '');
 						const MIN_CHARS_FOR_KEEP = 30; // umbral de caracteres no blancos
 						if (cleaned.length >= MIN_CHARS_FOR_KEEP) {
 							keptByQuickOcr = true;
 							// OPTIMIZACIÓN: Guardar resultado completo para reutilizar
-							quickOcrResult = {
-								text: quick.text,
-								confidence: quick.confidence || 0,
-								angle: angle || 0,
-								osd: true
-							};
+                                                        quickOcrResult = {
+                                                                text: quick.text,
+                                                                confidence: quick.confidence || 0,
+                                                                angle: angle || 0,
+                                                                osd: true,
+                                                                preprocessing: quick.preprocessing || (angle === 0 ? preprocessResult : null)
+                                                        };
 							quickOcrCache[pageNumber] = quickOcrResult;
-							imagenesValidas.push({ imagePath, pageNumber });
+                                                        imagenesValidas.push({ imagePath, pageNumber, preprocessResult });
 							logger.info(`[BLANK->OCR] Página ${pageNumber} conservada por quick-OCR (${cleaned.length} chars). Resultado cacheado.`);
 						}
 					} catch (quickErr) {
@@ -286,9 +300,9 @@ app.post('/api/process-pdf', async (req, res) => {
 					logger.info(`[BLANK] Página ${pageNumber} descartada por ser casi en blanco.`);
 					try { if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath); } catch (e) { /* ignore */ }
 				}
-			} else {
-				imagenesValidas.push({ imagePath, pageNumber });
-			}
+                        } else {
+                                imagenesValidas.push({ imagePath, pageNumber, preprocessResult });
+                        }
 		}
 		if (paginasBlancas.length > 0) {
 			logger.info(`[BLANK] Páginas descartadas antes de análisis: ${paginasBlancas.join(', ')}`);
@@ -298,30 +312,39 @@ app.post('/api/process-pdf', async (req, res) => {
 		// 3. Procesar solo imágenes válidas con OSD/OCR
 		const ocrResults = new Array(pageCount);
 		const tasks = [];
-		for (const { imagePath, pageNumber } of imagenesValidas) {
-			const i = pageNumber - 1;
-			const task = limit(async () => {
-				const startPage = process.hrtime();
-				// OPTIMIZACIÓN: Pasar resultado de quick-OCR si existe para reutilización
-				const cachedQuickOcr = quickOcrCache[pageNumber] || null;
-				const ocrResult = await ocrService.processPageWithOcr(imagePath, tesseractLang, cachedQuickOcr);
-				const pageElapsed = process.hrtime(startPage);
-				const pageSeconds = pageElapsed[0] + pageElapsed[1] / 1e9;
-				pageProcessDuration.observe(pageSeconds);
-				if (ocrResult) {
-					ocrResults[i] = {
-						pageNumber,
-						text: ocrResult.text,
-						confidence: ocrResult.confidence,
-						angle: ocrResult.angle,
-						osd: ocrResult.osd || false,
-						timeSeconds: pageSeconds
-					};
-				} else {
-					ocrResults[i] = null;
-				}
-				try { if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath); } catch (e) { /* ignore */ }
-			});
+                for (const { imagePath, pageNumber, preprocessResult } of imagenesValidas) {
+                        const i = pageNumber - 1;
+                        const task = limit(async () => {
+                                const startPage = process.hrtime();
+                                // OPTIMIZACIÓN: Pasar resultado de quick-OCR si existe para reutilización
+                                const cachedQuickOcr = quickOcrCache[pageNumber] || null;
+                                const sharedPreprocess = preprocessResult || preprocessCache.get(pageNumber) || null;
+                                try {
+                                        const ocrResult = await ocrService.processPageWithOcr(imagePath, tesseractLang, cachedQuickOcr, sharedPreprocess);
+                                        const pageElapsed = process.hrtime(startPage);
+                                        const pageSeconds = pageElapsed[0] + pageElapsed[1] / 1e9;
+                                        pageProcessDuration.observe(pageSeconds);
+                                        if (ocrResult) {
+                                                const { preprocessing: _ignored, ...cleanResult } = ocrResult;
+                                                ocrResults[i] = {
+                                                        pageNumber,
+                                                        text: cleanResult.text,
+                                                        confidence: cleanResult.confidence,
+                                                        angle: cleanResult.angle,
+                                                        osd: cleanResult.osd || false,
+                                                        timeSeconds: pageSeconds
+                                                };
+                                        } else {
+                                                ocrResults[i] = null;
+                                        }
+                                } finally {
+                                        try { if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath); } catch (e) { /* ignore */ }
+                                        preprocessCache.delete(pageNumber);
+                                        if (cachedQuickOcr && cachedQuickOcr.preprocessing) {
+                                                delete cachedQuickOcr.preprocessing;
+                                        }
+                                }
+                        });
 			tasks.push(task);
 		}
 		// Las páginas blancas quedan como null en ocrResults

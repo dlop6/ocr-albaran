@@ -4,7 +4,6 @@ const Tesseract = require("tesseract.js");
 const sharp = require("sharp");
 const logger = require('./logger');
 const execa = require('execa');
-const { isRelevantPage } = require('./parser');
 
 /**
  * Ejecuta OSD con Tesseract CLI y devuelve el ángulo detectado (0, 90, 180, 270) o null si falla.
@@ -32,27 +31,124 @@ async function detectOrientationWithOSD(imagePath) {
     }
 }
 
+/**
+ * Preprocesa la imagen teniendo en cuenta el DPI original y genera buffers
+ * compartidos (normalizado y binarizado) junto con estadísticas para detección
+ * de páginas en blanco.
+ *
+ * @param {string} imagePath
+ * @param {object} [options]
+ * @param {number} [options.targetDpi]
+ * @param {number} [options.minScale]
+ * @param {number} [options.maxScale]
+ * @param {number} [options.binaryThreshold]
+ * @returns {Promise<object>}
+ */
+async function preprocessImage(imagePath, options = {}) {
+    const {
+        targetDpi = Number(process.env.OCR_TARGET_DPI || 300),
+        minScale = Number(process.env.OCR_MIN_SCALE || 0.7),
+        maxScale = Number(process.env.OCR_MAX_SCALE || 3.0),
+        binaryThreshold = Number(options.binaryThreshold ?? process.env.OCR_BINARY_THRESHOLD ?? 245)
+    } = options;
 
-// lang debe ser 'spa' o 'eng' según input, nunca autodetectar ni usar ambos
-async function applyOcrToImage(imagePath, lang = "spa", numbersOnly = false) {
-    // Detectar tamaño de imagen antes de preprocesar
-    const metadata = await sharp(imagePath).metadata();
-    let imageTooSmall = false;
-    if (metadata.width < 10 || metadata.height < 10) {
-        imageTooSmall = true;
-        logger.warn(`[OCR] Imagen demasiado pequeña (${metadata.width}x${metadata.height}), se procesa igual: ${imagePath}`);
+    const base = sharp(imagePath, { sequentialRead: true });
+    const metadata = await base.metadata();
+    const width = metadata.width || null;
+    const height = metadata.height || null;
+    const density = metadata.density && isFinite(metadata.density) && metadata.density > 0
+        ? metadata.density
+        : null;
+
+    let scale = 1;
+    if (density) {
+        scale = targetDpi / density;
+    }
+    if (!isFinite(scale) || scale <= 0) {
+        scale = 1;
+    }
+    scale = Math.min(maxScale, Math.max(minScale, scale));
+
+    let resizeWidth = null;
+    if (width) {
+        resizeWidth = Math.max(1, Math.round(width * scale));
     }
 
-    // Preprocesar imagen antes de OCR de forma conservadora
-    // (blank-check redundante eliminado - ya se hace en index.js)
-    // Usar streams para evitar archivos temporales si es posible
-    const sharpPipeline = sharp(imagePath)
-        .resize({ width: 2000 }) // Resolución moderada
-        .sharpen({ sigma: 1.0 }) // Nitidez suave
-        .normalize(); // Normalizar contraste
+    let pipeline = base.clone();
+    if (resizeWidth && width) {
+        pipeline = pipeline.resize({
+            width: resizeWidth,
+            fit: 'inside',
+            withoutEnlargement: false
+        });
+    }
 
-    // Tesseract.js acepta buffer o stream
-    const preprocessedBuffer = await sharpPipeline.toBuffer();
+    pipeline = pipeline
+        .greyscale()
+        .gamma()
+        .normalize()
+        .sharpen({ sigma: 1.0 })
+        .modulate({ brightness: 1.05 })
+        .png();
+
+    const { data: processedBuffer, info: processedInfo } = await pipeline.toBuffer({ resolveWithObject: true });
+
+    const binarizedPipeline = sharp(processedBuffer, { sequentialRead: true })
+        .threshold(binaryThreshold)
+        .png();
+
+    const [binaryResult, stats] = await Promise.all([
+        binarizedPipeline.clone().toBuffer({ resolveWithObject: true }),
+        binarizedPipeline.clone().stats()
+    ]);
+
+    const imageTooSmall = Boolean(width && height && (width < 10 || height < 10));
+
+    return {
+        originalPath: imagePath,
+        metadata,
+        target: {
+            dpi: targetDpi,
+            density,
+            scale,
+            width: processedInfo.width,
+            height: processedInfo.height
+        },
+        processed: {
+            buffer: processedBuffer,
+            info: processedInfo
+        },
+        binarized: {
+            buffer: binaryResult.data,
+            info: binaryResult.info,
+            stats,
+            threshold: binaryThreshold
+        },
+        imageTooSmall
+    };
+}
+
+
+// lang debe ser 'spa' o 'eng' según input, nunca autodetectar ni usar ambos
+async function applyOcrToImage(imagePath, lang = "spa", numbersOnly = false, preprocessResult = null) {
+    let preprocessing = null;
+    if (preprocessResult && preprocessResult.originalPath === imagePath) {
+        preprocessing = preprocessResult;
+    } else {
+        preprocessing = await preprocessImage(imagePath, {
+            binaryThreshold: preprocessResult && preprocessResult.binarized
+                ? preprocessResult.binarized.threshold
+                : undefined
+        });
+    }
+
+    const metadata = preprocessing.metadata || {};
+    const imageTooSmall = preprocessing.imageTooSmall;
+
+    // Preferir buffer binarizado cuando solo se necesitan números para maximizar contraste
+    const bufferForOcr = (numbersOnly && preprocessing.binarized && preprocessing.binarized.buffer)
+        ? preprocessing.binarized.buffer
+        : preprocessing.processed.buffer;
 
     // Configurar Tesseract
     const options = {
@@ -65,10 +161,10 @@ async function applyOcrToImage(imagePath, lang = "spa", numbersOnly = false) {
         options.tessedit_pageseg_mode = 7; // PSM 7: una sola línea de texto
     }
 
-    const { data: { text, confidence } } = await Tesseract.recognize(preprocessedBuffer, lang, options);
-    // Liberar buffer explícitamente 
+    const { data: { text, confidence } } = await Tesseract.recognize(bufferForOcr, lang, options);
+    // Liberar buffer explícitamente
     if (global.gc) global.gc();
-    return { text, confidence, imageTooSmall, width: metadata.width, height: metadata.height };
+    return { text, confidence, imageTooSmall, width: metadata.width, height: metadata.height, preprocessing };
 }
 
 // Rota una imagen en múltiplos de 90 grados
@@ -115,9 +211,17 @@ async function rotateImage(imagePath, angle) {
 // Procesa una página: rota y aplica OCR hasta que sea legible
 // lang debe ser 'spa' o 'eng' según input
 // quickOcrResult: resultado opcional de quick-OCR para reutilización
-async function processPageWithOcr(imagePath, lang = "spa", quickOcrResult = null) {
+// preprocessResult: resultado de preprocesado compartido (sin rotación)
+async function processPageWithOcr(imagePath, lang = "spa", quickOcrResult = null, preprocessResult = null) {
     const { hasValidOrientation } = require('./parser');
-    
+
+    let basePreprocess = null;
+    if (preprocessResult && preprocessResult.originalPath === imagePath) {
+        basePreprocess = preprocessResult;
+    } else if (quickOcrResult && quickOcrResult.preprocessing && quickOcrResult.preprocessing.originalPath === imagePath) {
+        basePreprocess = quickOcrResult.preprocessing;
+    }
+
     // OPTIMIZACIÓN 1: Reutilizar resultado de quick-OCR si es válido
     if (quickOcrResult && quickOcrResult.text && quickOcrResult.text.length > 30) {
         if (hasValidOrientation(quickOcrResult.text, lang)) {
@@ -143,7 +247,8 @@ async function processPageWithOcr(imagePath, lang = "spa", quickOcrResult = null
     }
 
     // OCR con ángulo detectado por OSD
-    const osdResult = await applyOcrToImage(rotatedPath, lang, false);
+    const osdPreprocess = angle === 0 ? basePreprocess : null;
+    const osdResult = await applyOcrToImage(rotatedPath, lang, false, osdPreprocess);
     logger.info(`[OSD] Ángulo detectado: ${angle}°`);
     
     // Limpiar imagen rotada temporal inmediatamente
@@ -186,7 +291,8 @@ async function processPageWithOcr(imagePath, lang = "spa", quickOcrResult = null
             }
         }
 
-        const fallbackResult = await applyOcrToImage(fallbackPath, lang, false);
+        const fallbackPreprocess = fallbackAngle === 0 ? basePreprocess : null;
+        const fallbackResult = await applyOcrToImage(fallbackPath, lang, false, fallbackPreprocess);
         
         // Limpiar imagen rotada temporal inmediatamente
         if (createdFallback && fallbackPath && fs.existsSync(fallbackPath)) {
@@ -225,6 +331,7 @@ module.exports = {
     applyOcrToImage,
     rotateImage,
     processPageWithOcr,
-    detectOrientationWithOSD
+    detectOrientationWithOSD,
+    preprocessImage
 };
 
