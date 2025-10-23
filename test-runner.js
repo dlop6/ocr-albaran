@@ -1,8 +1,11 @@
-#!/usr/bin/env node
-'use strict';
+const fs = require('fs');
+const path = require('path');
 
-const { runBenchmark } = require('./test/preprocessing.benchmark');
+const testsDir = path.join(__dirname, 'test');
 
-(async () => {
-  await runBenchmark();
-})();
+fs.readdirSync(testsDir)
+  .filter(file => file.endsWith('.test.js'))
+  .sort()
+  .forEach(file => {
+    require(path.join(testsDir, file));
+  });
