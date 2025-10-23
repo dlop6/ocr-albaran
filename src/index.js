@@ -4,7 +4,8 @@ require('dotenv').config();
 const express = require('express');
 const app = express();
 const bodyParser = require('body-parser');
-const fs = require('fs');
+const fs = require('fs/promises');
+const { constants } = require('fs');
 const path = require('path');
 const pdfService = require('./pdfService');
 const ocrService = require('./ocrService');
@@ -16,6 +17,9 @@ const logger = require('./logger');
 const promClient = require('prom-client');
 const rateLimit = require('express-rate-limit');
 const os = require('os');
+const { spawn } = require('child_process');
+
+const fsPromises = fs.promises;
 
 // ---------- Configuración de rate limiting ----------
 // --- Arreglo para evitar "undefined request.ip" ---
@@ -68,6 +72,29 @@ const httpRequestDuration = new promClient.Histogram({
 	help: 'Duración de requests HTTP en segundos',
 	labelNames: ['method', 'route', 'status']
 });
+const healthRequestCounter = new promClient.Counter({
+	name: 'health_requests_total',
+	help: 'Total de requests HTTP al endpoint /health'
+});
+const healthProcessSpawnCounter = new promClient.Counter({
+	name: 'health_process_spawns_total',
+	help: 'Procesos lanzados por el endpoint /health',
+	labelNames: ['binary']
+});
+
+const parsePositiveInt = (value, fallback) => {
+        const parsed = parseInt(value, 10);
+        if (Number.isFinite(parsed) && parsed > 0) {
+                return parsed;
+        }
+        return fallback;
+};
+
+const HEALTH_ACCESS_TTL_MS = parsePositiveInt(process.env.HEALTH_ACCESS_TTL_MS, 60 * 1000);
+const HEALTH_SPAWN_TTL_MS = parsePositiveInt(process.env.HEALTH_SPAWN_TTL_MS, 5 * 60 * 1000);
+
+const binaryAccessCache = new Map();
+const healthSpawnCache = new Map();
 
 // Registrar métricas por defecto
 promClient.collectDefaultMetrics();
@@ -171,305 +198,451 @@ app.post('/api/process-pdf', async (req, res) => {
 		return res.status(400).json({ error: 'Invalid base64 format' });
 	}
 
-	const tempPdfPath = path.join(os.tmpdir(), 'temp.pdf');
-	const outputDir = path.join(os.tmpdir(), 'temp_images');
-        let imagePaths = [];
-        let pageCount = 0;
-        let pdfSizeMB = 0;
-        let cleanupNeeded = false;
+	
 
-	try {
-		const pdfBuffer = Buffer.from(pdfBase64, 'base64');
+		const requestId = randomUUID();
+		const tempPdfPath = path.join(os.tmpdir(), `ocr-${requestId}.pdf`);
+		const outputDir = path.join(os.tmpdir(), `ocr-${requestId}`);
+		const fileTracker = new FileReferenceTracker();
+		let ocrTasks = [];
+		let imagePaths = [];
+		let pageCount = 0;
+		let pdfSizeMB = 0;
 
-		// Validación del PDF (pdfService debe exponer validatePdf)
-		if (typeof pdfService.validatePdf === 'function') {
-			if (!pdfService.validatePdf(pdfBuffer)) {
-				return res.status(400).json({ error: 'El archivo proporcionado no es un PDF válido' });
-			}
-		}
-
-		// Guardar temporalmente
-		fs.writeFileSync(tempPdfPath, pdfBuffer);
-
-		// Cargar PDF y obtener páginas
-		const pdfDoc = await pdfService.loadPdf(pdfBuffer);
-		pageCount = pdfService.getPageCount(pdfDoc);
-		pdfSizeMB = Number((pdfBuffer.length / (1024 * 1024)).toFixed(2));
-
-		if (pageCount > 60) {
-			logger.error(`PDF tiene ${pageCount} páginas, excede el límite de 60.`);
-			throw new Error(`PDF tiene ${pageCount} páginas, excede el límite de 60.`);
-		}
-
-		const startTotal = process.hrtime();
-		const limit = concurrencyLimit;
-		const paginasBlancas = [];
-		const quickOcrCache = {};
-		const ocrResults = new Array(pageCount);
-		const ocrTasks = [];
-		let imagenesValidasCount = 0;
-
-		const markPageAsBlank = (pageNumber) => {
-			if (!paginasBlancas.includes(pageNumber)) {
-				paginasBlancas.push(pageNumber);
-			}
-			ocrResults[pageNumber - 1] = null;
-		};
-
-		const scheduleOcr = (imagePath, pageNumber) => {
-			const i = pageNumber - 1;
-			const task = limit(async () => {
-				const startPage = process.hrtime();
-				const cachedQuickOcr = quickOcrCache[pageNumber] || null;
-				const ocrResult = await ocrService.processPageWithOcr(imagePath, tesseractLang, cachedQuickOcr);
-				const pageElapsed = process.hrtime(startPage);
-				const pageSeconds = pageElapsed[0] + pageElapsed[1] / 1e9;
-				pageProcessDuration.observe(pageSeconds);
-				if (ocrResult) {
-					ocrResults[i] = {
-						pageNumber,
-						text: ocrResult.text,
-						confidence: ocrResult.confidence,
-						angle: ocrResult.angle,
-						osd: ocrResult.osd || false,
-						timeSeconds: pageSeconds
-					};
-				} else {
-					ocrResults[i] = null;
-				}
-				try { if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath); } catch (e) { /* ignore */ }
-			});
-			ocrTasks.push(task);
-			imagenesValidasCount++;
-		};
-
-		const processPageEntry = async (imagePath, pageNumber) => {
-			if (!imagePath) {
-				logger.warn(`[RASTER] No se generó imagen para la página ${pageNumber}. Marcando como descartada.`);
-				markPageAsBlank(pageNumber);
-				return;
-			}
-
-			let esBlanca = false;
-			try {
-				esBlanca = await isImageBlank(imagePath);
-			} catch (err) {
-				logger.warn(`[BLANK DETECTION] Error analizando página ${pageNumber}: ${err.message}`);
-			}
-
-			if (esBlanca) {
-				let keptByQuickOcr = false;
-
-				try {
-					const angle = await ocrService.detectOrientationWithOSD(imagePath);
-					let rotatedPath = imagePath;
-					let createdRotated = false;
-					if (angle !== null && angle !== 0) {
-						try {
-							rotatedPath = await ocrService.rotateImage(imagePath, angle);
-							createdRotated = true;
-						} catch (rotateErr) {
-							logger.warn(`[BLANK->QUICK OCR] No se pudo rotar página ${pageNumber}: ${rotateErr.message}`);
-							rotatedPath = imagePath;
-						}
-					}
-					try {
-						const quick = await ocrService.applyOcrToImage(rotatedPath, tesseractLang, false);
-						const text = (quick && quick.text) ? quick.text : '';
-						const cleaned = text.replace(/\s+/g, '');
-						const MIN_CHARS_FOR_KEEP = 30;
-						if (cleaned.length >= MIN_CHARS_FOR_KEEP) {
-							keptByQuickOcr = true;
-							quickOcrCache[pageNumber] = {
-								text: quick.text,
-								confidence: quick.confidence || 0,
-								angle: angle || 0,
-								osd: true
-							};
-							logger.info(`[BLANK->OCR] Página ${pageNumber} conservada por quick-OCR (${cleaned.length} chars). Resultado cacheado.`);
-						}
-					} catch (quickErr) {
-						logger.warn(`[BLANK->QUICK OCR] Error OCR rápido página ${pageNumber}: ${quickErr.message}`);
-					}
-					try {
-						if (rotatedPath !== imagePath && fs.existsSync(rotatedPath)) {
-							fs.unlinkSync(rotatedPath);
-						}
-					} catch (e) { /* ignore */ }
-				} catch (err) {
-					logger.warn(`[BLANK->QUICK OCR] Error en excepción quick-OCR para página ${pageNumber}: ${err.message}`);
-				}
-
-				if (!keptByQuickOcr) {
-					markPageAsBlank(pageNumber);
-					logger.info(`[BLANK] Página ${pageNumber} descartada por ser casi en blanco.`);
-					try { if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath); } catch (e) { /* ignore */ }
-					return;
-				}
-			}
-
-			scheduleOcr(imagePath, pageNumber);
-		};
-
-                if (typeof pdfService.extractPagesAsImagesStream === 'function') {
-                        cleanupNeeded = true;
-			let lastPageNumber = 0;
-			for await (const pageInfo of pdfService.extractPagesAsImagesStream(tempPdfPath, outputDir, pageCount, { pdfBuffer })) {
-				const pageNumber = (pageInfo && pageInfo.pageNumber) ? pageInfo.pageNumber : (lastPageNumber + 1);
-				lastPageNumber = pageNumber;
-				if (pageInfo && typeof pageInfo.rasterTimeSeconds === 'number' && pageInfo.rasterTimeSeconds > 0) {
-					pageRasterDuration.observe(pageInfo.rasterTimeSeconds);
-				}
-				if (pageInfo && pageInfo.fallback) {
-					logger.debug(`[RASTER] Página ${pageNumber} generada mediante fallback.`);
-				}
-				if (pageInfo && pageInfo.error) {
-					logger.warn(`[RASTER] Página ${pageNumber} reportó incidencias de rasterización: ${pageInfo.error.message || pageInfo.error}`);
-				}
-				await processPageEntry(pageInfo ? pageInfo.imagePath : null, pageNumber);
-			}
-		} else {
-			imagePaths = await pdfService.extractPagesAsImages(tempPdfPath, outputDir, pageCount, { pdfBuffer });
-			cleanupNeeded = Array.isArray(imagePaths) && imagePaths.length > 0;
-			for (let i = 0; i < imagePaths.length; i++) {
-				await processPageEntry(imagePaths[i], i + 1);
-			}
-		}
-
-		if (paginasBlancas.length > 0) {
-			logger.info(`[BLANK] Páginas descartadas antes de análisis: ${paginasBlancas.join(', ')}`);
-		}
-		logger.info(`[QUICK-OCR CACHE] ${Object.keys(quickOcrCache).length} páginas con resultado cacheado para reutilización.`);
-
-		await Promise.all(ocrTasks);
-		logger.info(`[RASTER] ${imagenesValidasCount} páginas enviadas a OCR completo.`);
-		const elapsedTotal = process.hrtime(startTotal);
-		const elapsedSeconds = elapsedTotal[0] + elapsedTotal[1] / 1e9;
-		pdfProcessDuration.observe(elapsedSeconds);
-
-		// 1. Filtrar páginas relevantes usando parser.parseDocument
-		const pagesForParser = ocrResults
-			.map((r) => r ? { text: r.text, pageNumber: r.pageNumber } : null)
-			.filter(Boolean);
-
-		const relevantPages = (typeof parser.parseDocument === 'function')
-			? parser.parseDocument(pagesForParser)
-			: pagesForParser; // si no existe parser, devolver todo
-
-
-		// 2. Extraer campos estructurados usando fieldExtractor, incluyendo timeSeconds
-		const extracted = relevantPages.map(page => {
-			if (typeof fieldExtractor.extractFieldsFromText === 'function') {
-				// Buscar el tiempo de análisis de la página
-				let timeSeconds = null;
-				// Buscar en ocrResults por pageNumber
-				const ocrResult = ocrResults[page.pageNumber - 1];
-				if (ocrResult && typeof ocrResult.timeSeconds === 'number') {
-					timeSeconds = ocrResult.timeSeconds;
-				}
-				// Extraer campos y añadir timeSeconds
-				const campos = fieldExtractor.extractFieldsFromText(page.text, page.pageNumber, idiomaInput);
-				return { ...campos, timeSeconds };
-			}
-			return { pageNumber: page.pageNumber, rawText: page.text };
-		});
-
-		logger.info(`[OCR] PDF procesado correctamente: ${pageCount} páginas, ${pdfSizeMB} MB, tiempo total: ${elapsedSeconds.toFixed(2)}s, páginas relevantes: ${extracted.length}`);
-		// Nuevo response con trazabilidad y estado global
-		const numEsperados = albaranesEsperadosValue;
-		const numExtraidos = extracted.length;
-		const numParciales = extracted.filter(x => x.statusError).length;
-
-		let statusErrorGlobal = false;
-		let mensajeGlobal = [];
-
-		if (typeof numEsperados === 'number' && numExtraidos < numEsperados) {
-			statusErrorGlobal = true;
-			mensajeGlobal.push(`Solo se reconocieron ${numExtraidos} de ${numEsperados} albaranes.`);
-		}
-		if (numParciales > 0) {
-			statusErrorGlobal = true;
-			mensajeGlobal.push(`${numParciales} albaranes parcialmente extraídos.`);
-		}
-
-		const response = {
-			paginasInput: pageCount,
-			albaranesExtraidos: numExtraidos,
-			datos: extracted,
-			paginasBlancas,
-			statusError: statusErrorGlobal,
-			mensaje: mensajeGlobal.join(' | ')
-		};
-		return res.json(response);
-	} catch (err) {
-		logger.error('[OCR] Error procesando PDF:', err);
-		if (err.message && err.message.includes('excede el límite de 60')) {
-			return res.status(400).json({ error: err.message });
-		}
-		return res.status(500).json({ error: err.message || 'Error processing PDF' });
-	} finally {
-		// Limpieza de recursos temporales
-                try {
-                        if (cleanupNeeded && typeof pdfService.cleanupTempImages === 'function') {
-                                pdfService.cleanupTempImages(outputDir);
-                        } else if (fs.existsSync(outputDir)) {
-				// fallback: intentar eliminar archivos dentro de outputDir
-				fs.readdir(outputDir, (err, files) => {
-					if (!err && Array.isArray(files)) {
-						for (const file of files) {
-							try { fs.unlinkSync(path.join(outputDir, file)); } catch (e) { /* ignore */ }
-						}
-						try { fs.rmdirSync(outputDir); } catch (e) { /* ignore */ }
-					}
-				});
-			}
-		} catch (cleanupErr) {
-			logger.error('[CLEANUP] Error al limpiar imágenes temporales:', cleanupErr);
-		}
 		try {
-			if (fs.existsSync(tempPdfPath)) fs.unlinkSync(tempPdfPath);
-		} catch (cleanupErr) {
-			logger.error('[CLEANUP] Error al eliminar PDF temporal:', cleanupErr);
+		        const pdfBuffer = Buffer.from(pdfBase64, 'base64');
+
+		        if (typeof pdfService.validatePdf === 'function') {
+		                const isValidPdf = await pdfService.validatePdf(pdfBuffer);
+		                if (!isValidPdf) {
+		                        return res.status(400).json({ error: 'El archivo proporcionado no es un PDF válido' });
+		                }
+		        }
+
+		        await fs.writeFile(tempPdfPath, pdfBuffer);
+
+		        const pdfDoc = await pdfService.loadPdf(pdfBuffer);
+		        pageCount = pdfService.getPageCount(pdfDoc);
+		        pdfSizeMB = Number((pdfBuffer.length / (1024 * 1024)).toFixed(2));
+
+		        if (pageCount > 60) {
+		                logger.error(`PDF tiene ${pageCount} páginas, excede el límite de 60.`);
+		                throw new Error(`PDF tiene ${pageCount} páginas, excede el límite de 60.`);
+		        }
+
+                        const startTotal = process.hrtime();
+		        const allImagePaths = [];
+		        if (typeof pdfService.extractPagesAsImagesStream === 'function') {
+		                let pageIndex = 0;
+		                for await (const imagePath of pdfService.extractPagesAsImagesStream(tempPdfPath, outputDir, pageCount)) {
+		                        if (imagePath) {
+		                                fileTracker.acquire(imagePath);
+		                        }
+		                        allImagePaths.push({ imagePath, pageNumber: pageIndex + 1 });
+		                        pageIndex++;
+		                }
+		        } else {
+		                imagePaths = await pdfService.extractPagesAsImages(tempPdfPath, outputDir, pageCount);
+		                for (let i = 0; i < imagePaths.length; i++) {
+		                        const imagePath = imagePaths[i];
+		                        if (imagePath) {
+		                                fileTracker.acquire(imagePath);
+		                        }
+		                        allImagePaths.push({ imagePath, pageNumber: i + 1 });
+		                }
+		        }
+
+		        const paginasBlancas = [];
+		        const imagenesValidas = [];
+		        const quickOcrCache = {};
+
+		        for (const { imagePath, pageNumber } of allImagePaths) {
+		                if (!imagePath) {
+		                        paginasBlancas.push(pageNumber);
+		                        continue;
+		                }
+		                let esBlanca = false;
+		                try {
+		                        esBlanca = await isImageBlank(imagePath);
+		                } catch (err) {
+		                        logger.warn(`[BLANK DETECTION] Error analizando página ${pageNumber}: ${err.message}`);
+		                }
+
+		                if (esBlanca) {
+		                        let keptByQuickOcr = false;
+		                        try {
+		                                const angle = await ocrService.detectOrientationWithOSD(imagePath);
+		                                let rotatedPath = imagePath;
+		                                let createdRotated = false;
+		                                if (angle !== null && angle !== 0) {
+		                                        try {
+		                                                rotatedPath = await ocrService.rotateImage(imagePath, angle);
+		                                                createdRotated = true;
+		                                        } catch (rotateErr) {
+		                                                logger.warn(`[BLANK->QUICK OCR] No se pudo rotar página ${pageNumber}: ${rotateErr.message}`);
+		                                                rotatedPath = imagePath;
+		                                        }
+		                                }
+		                                try {
+		                                        const quick = await ocrService.applyOcrToImage(rotatedPath, tesseractLang, false);
+		                                        const text = (quick && quick.text) ? quick.text : '';
+		                                        const cleaned = text.replace(/\s+/g, '');
+		                                        const MIN_CHARS_FOR_KEEP = 30;
+		                                        if (cleaned.length >= MIN_CHARS_FOR_KEEP) {
+		                                                keptByQuickOcr = true;
+		                                                const quickOcrResult = {
+		                                                        text: quick.text,
+		                                                        confidence: quick.confidence || 0,
+		                                                        angle: angle || 0,
+		                                                        osd: true
+		                                                };
+		                                                quickOcrCache[pageNumber] = quickOcrResult;
+		                                                imagenesValidas.push({ imagePath, pageNumber });
+		                                                logger.info(`[BLANK->OCR] Página ${pageNumber} conservada por quick-OCR (${cleaned.length} chars). Resultado cacheado.`);
+		                                        }
+		                                } catch (quickErr) {
+		                                        logger.warn(`[BLANK->QUICK OCR] Error OCR rápido página ${pageNumber}: ${quickErr.message}`);
+		                                } finally {
+		                                        if (createdRotated && rotatedPath && rotatedPath !== imagePath && await fileExists(rotatedPath)) {
+		                                                try {
+		                                                        await fs.unlink(rotatedPath);
+		                                                } catch (cleanupErr) {
+		                                                        logger.warn(`[BLANK->QUICK OCR] No se pudo eliminar imagen rotada temporal ${rotatedPath}: ${cleanupErr.message}`);
+		                                                }
+		                                        }
+		                                }
+		                        } catch (err) {
+		                                logger.warn(`[BLANK->QUICK OCR] Error en excepción quick-OCR para página ${pageNumber}: ${err.message}`);
+		                        }
+
+		                        if (!keptByQuickOcr) {
+		                                paginasBlancas.push(pageNumber);
+		                                logger.info(`[BLANK] Página ${pageNumber} descartada por ser casi en blanco.`);
+		                                await fileTracker.release(imagePath);
+		                        }
+		                } else {
+		                        imagenesValidas.push({ imagePath, pageNumber });
+		                }
+		        }
+		        if (paginasBlancas.length > 0) {
+		                logger.info(`[BLANK] Páginas descartadas antes de análisis: ${paginasBlancas.join(', ')}`);
+		        }
+		        logger.info(`[QUICK-OCR CACHE] ${Object.keys(quickOcrCache).length} páginas con resultado cacheado para reutilización.`);
+
+		        const ocrResults = new Array(pageCount);
+		        const tasks = [];
+		        for (const { imagePath, pageNumber } of imagenesValidas) {
+		                const i = pageNumber - 1;
+                        const task = concurrencyLimit(async () => {
+		                        if (!imagePath) {
+		                                ocrResults[i] = null;
+		                                return;
+		                        }
+		                        fileTracker.acquire(imagePath);
+		                        const startPage = process.hrtime();
+		                        try {
+		                                const cachedQuickOcr = quickOcrCache[pageNumber] || null;
+		                                const ocrResult = await ocrService.processPageWithOcr(imagePath, tesseractLang, cachedQuickOcr);
+		                                const pageElapsed = process.hrtime(startPage);
+		                                const pageSeconds = pageElapsed[0] + pageElapsed[1] / 1e9;
+		                                pageProcessDuration.observe(pageSeconds);
+		                                if (ocrResult) {
+		                                        ocrResults[i] = {
+		                                                pageNumber,
+		                                                text: ocrResult.text,
+		                                                confidence: ocrResult.confidence,
+		                                                angle: ocrResult.angle,
+		                                                osd: ocrResult.osd || false,
+		                                                timeSeconds: pageSeconds
+		                                        };
+		                                } else {
+		                                        ocrResults[i] = null;
+		                                }
+		                        } finally {
+		                                await fileTracker.release(imagePath);
+		                                await fileTracker.release(imagePath);
+		                        }
+		                });
+		                tasks.push(task);
+		        }
+		        for (const pageNumber of paginasBlancas) {
+		                ocrResults[pageNumber - 1] = null;
+		        }
+		        ocrTasks = tasks;
+		        await Promise.all(ocrTasks);
+
+		        const elapsedTotal = process.hrtime(startTotal);
+		        const elapsedSeconds = elapsedTotal[0] + elapsedTotal[1] / 1e9;
+		        pdfProcessDuration.observe(elapsedSeconds);
+
+		        // 1. Filtrar páginas relevantes usando parser.parseDocument
+		        const pagesForParser = ocrResults
+		                .map((r) => r ? { text: r.text, pageNumber: r.pageNumber } : null)
+		                .filter(Boolean);
+
+		        const relevantPages = (typeof parser.parseDocument === 'function')
+		                ? parser.parseDocument(pagesForParser)
+		                : pagesForParser; // si no existe parser, devolver todo
+
+
+		        // 2. Extraer campos estructurados usando fieldExtractor, incluyendo timeSeconds
+		        const extracted = relevantPages.map(page => {
+		                if (typeof fieldExtractor.extractFieldsFromText === 'function') {
+		                        // Buscar el tiempo de análisis de la página
+		                        let timeSeconds = null;
+		                        // Buscar en ocrResults por pageNumber
+		                        const ocrResult = ocrResults[page.pageNumber - 1];
+		                        if (ocrResult && typeof ocrResult.timeSeconds === 'number') {
+		                                timeSeconds = ocrResult.timeSeconds;
+		                        }
+		                        // Extraer campos y añadir timeSeconds
+		                        const campos = fieldExtractor.extractFieldsFromText(page.text, page.pageNumber, idiomaInput);
+		                        return { ...campos, timeSeconds };
+		                }
+		                return { pageNumber: page.pageNumber, rawText: page.text };
+		        });
+
+		        logger.info(`[OCR] PDF procesado correctamente: ${pageCount} páginas, ${pdfSizeMB} MB, tiempo total: ${elapsedSeconds.toFixed(2)}s, páginas relevantes: ${extracted.length}`);
+		        // Nuevo response con trazabilidad y estado global
+		        const numEsperados = albaranesEsperadosValue;
+		        const numExtraidos = extracted.length;
+		        const numParciales = extracted.filter(x => x.statusError).length;
+
+		        let statusErrorGlobal = false;
+		        let mensajeGlobal = [];
+
+		        if (typeof numEsperados === 'number' && numExtraidos < numEsperados) {
+		                statusErrorGlobal = true;
+		                mensajeGlobal.push(`Solo se reconocieron ${numExtraidos} de ${numEsperados} albaranes.`);
+		        }
+		        if (numParciales > 0) {
+		                statusErrorGlobal = true;
+		                mensajeGlobal.push(`${numParciales} albaranes parcialmente extraídos.`);
+		        }
+
+		        const response = {
+		                paginasInput: pageCount,
+		                albaranesExtraidos: numExtraidos,
+		                datos: extracted,
+		                paginasBlancas,
+		                statusError: statusErrorGlobal,
+		                mensaje: mensajeGlobal.join(' | ')
+		        };
+		        return res.json(response);
+		} catch (err) {
+		        logger.error('[OCR] Error procesando PDF:', err);
+		        if (err.message && err.message.includes('excede el límite de 60')) {
+		                return res.status(400).json({ error: err.message });
+		        }
+		        return res.status(500).json({ error: err.message || 'Error processing PDF' });
+		} finally {
+		        try {
+		                if (ocrTasks.length > 0) {
+		                        await Promise.allSettled(ocrTasks);
+		                }
+		        } catch (waitErr) {
+		                logger.error('[CLEANUP] Error esperando tareas OCR:', waitErr);
+		        }
+		        try {
+		                await fileTracker.releaseAll();
+		        } catch (cleanupErr) {
+		                logger.error('[CLEANUP] Error liberando archivos temporales:', cleanupErr);
+		        }
+		        try {
+		                if (typeof pdfService.cleanupTempImages === 'function') {
+		                        await pdfService.cleanupTempImages(outputDir);
+		                }
+		        } catch (cleanupErr) {
+		                logger.error('[CLEANUP] Error al limpiar imágenes temporales:', cleanupErr);
+		        }
+		        try {
+		                if (await fileExists(outputDir)) {
+		                        const remaining = await fs.readdir(outputDir);
+		                        if (remaining.length === 0) {
+		                                await fs.rmdir(outputDir);
+		                        }
+		                }
+		        } catch (cleanupErr) {
+		                if (cleanupErr && cleanupErr.code !== 'ENOENT' && cleanupErr.code !== 'ENOTEMPTY') {
+		                        logger.error('[CLEANUP] Error al eliminar directorio temporal:', cleanupErr);
+		                }
+		        }
+		        try {
+		                if (await fileExists(tempPdfPath)) {
+		                        await fs.unlink(tempPdfPath);
+		                }
+		        } catch (cleanupErr) {
+		                logger.error('[CLEANUP] Error al eliminar PDF temporal:', cleanupErr);
+		        }
 		}
-	}
-});
+
+
+async function locateExecutable(binaryName) {
+        const now = Date.now();
+        const cachedEntry = binaryAccessCache.get(binaryName);
+        if (cachedEntry && (now - cachedEntry.timestamp) < HEALTH_ACCESS_TTL_MS) {
+                if (cachedEntry.path) {
+                        logger.debug(`[HEALTH] Usando ruta en caché para ${binaryName}: ${cachedEntry.path}`);
+                }
+                return cachedEntry.path;
+        }
+
+        const pathVariable = process.env.PATH ? process.env.PATH.split(path.delimiter) : [];
+        const candidateNames = process.platform === 'win32'
+                ? [binaryName, `${binaryName}.exe`, `${binaryName}.cmd`, `${binaryName}.bat`]
+                : [binaryName];
+
+        for (const base of pathVariable) {
+                if (!base) {
+                        continue;
+                }
+                for (const candidate of candidateNames) {
+                        const candidatePath = path.join(base, candidate);
+                        try {
+                                await fsPromises.access(candidatePath, fs.constants.X_OK);
+                                binaryAccessCache.set(binaryName, { timestamp: Date.now(), path: candidatePath });
+                                logger.debug(`[HEALTH] Detectado ${binaryName} en ${candidatePath}`);
+                                return candidatePath;
+                        } catch (err) {
+                                // continuar con el siguiente candidato
+                        }
+                }
+        }
+
+        binaryAccessCache.set(binaryName, { timestamp: Date.now(), path: null });
+        logger.warn(`[HEALTH] No se encontró ${binaryName} en PATH`);
+        return null;
+}
+
+async function runSpawnWithCache(binaryName, args) {
+        const now = Date.now();
+        const cacheEntry = healthSpawnCache.get(binaryName);
+
+        if (cacheEntry?.inFlightPromise) {
+                logger.debug(`[HEALTH] Esperando resultado en curso para ${binaryName}`);
+                return cacheEntry.inFlightPromise;
+        }
+
+        if (cacheEntry && cacheEntry.timestamp && (now - cacheEntry.timestamp) < HEALTH_SPAWN_TTL_MS) {
+                logger.debug(`[HEALTH] Usando resultado en caché para ${binaryName} (edad: ${now - cacheEntry.timestamp} ms)`);
+                return {
+                        success: cacheEntry.success,
+                        fromCache: true,
+                        lastChecked: cacheEntry.timestamp
+                };
+        }
+
+        logger.info(`[HEALTH] TTL expirado: ejecutando ${binaryName} ${args.join(' ')} para verificación`);
+        healthProcessSpawnCounter.inc({ binary: binaryName });
+
+        const spawnPromise = new Promise((resolve) => {
+                let settled = false;
+
+                const finalize = (success, error) => {
+                        if (settled) return;
+                        settled = true;
+                        const timestamp = Date.now();
+                        resolve({
+                                success,
+                                fromCache: false,
+                                lastChecked: timestamp,
+                                error
+                        });
+                };
+
+                let child;
+                try {
+                        child = spawn(binaryName, args);
+                } catch (error) {
+                        logger.error(`[HEALTH] Excepción al lanzar ${binaryName}: ${error.message}`);
+                        finalize(false, error);
+                        return;
+                }
+
+                child.on('error', (error) => {
+                        logger.warn(`[HEALTH] Error al ejecutar ${binaryName}: ${error.message}`);
+                        finalize(false, error);
+                });
+
+                child.on('close', (code) => {
+                        if (code !== 0) {
+                                logger.warn(`[HEALTH] ${binaryName} finalizó con código ${code}`);
+                        } else {
+                                logger.debug(`[HEALTH] ${binaryName} finalizó correctamente`);
+                        }
+                        finalize(code === 0);
+                });
+        });
+
+        healthSpawnCache.set(binaryName, { inFlightPromise: spawnPromise });
+        const result = await spawnPromise;
+        healthSpawnCache.set(binaryName, { timestamp: result.lastChecked, success: result.success });
+        return result;
+}
+
+async function checkBinaryHealth(binaryName, args) {
+        const executablePath = await locateExecutable(binaryName);
+        if (!executablePath) {
+                return {
+                        ok: false,
+                        fromCache: false,
+                        lastChecked: null
+                };
+        }
+
+        const spawnResult = await runSpawnWithCache(binaryName, args);
+        return {
+                ok: spawnResult.success,
+                fromCache: spawnResult.fromCache,
+                lastChecked: spawnResult.lastChecked,
+                path: executablePath
+        };
+}
 
 // ---------- Endpoint de salud ----------
 app.get('/health', async (req, res) => {
-	// Verificar Tesseract
-	const tesseractOk = await new Promise(resolve => {
-		const { spawn } = require('child_process');
-		const proc = spawn('tesseract', ['--version']);
-		proc.on('error', () => resolve(false));
-		proc.on('close', code => resolve(code === 0));
-	});
+        healthRequestCounter.inc();
 
-	// Verificar Poppler (pdftocairo)
-	const popplerOk = await new Promise(resolve => {
-		const { spawn } = require('child_process');
-		// -v no siempre devuelve 0 en pdftocairo; simplemente comprobar existencia ejecutable
-		const proc = spawn('pdftocairo', ['-v']);
-		proc.on('error', () => resolve(false));
-		proc.on('close', code => {
-			// pdftocairo suele enviar salida por stderr y cerrar con 0; considerar 0 como OK
-			resolve(code === 0);
-		});
-	});
+        try {
+                const [tesseractStatus, popplerStatus] = await Promise.all([
+                        checkBinaryHealth('tesseract', ['--version']),
+                        checkBinaryHealth('pdftocairo', ['-v'])
+                ]);
 
-	// Verificar memoria libre (indicador simple)
-	let diskOk = false;
-	try {
-		const freeMB = os.freemem() / (1024 * 1024);
-		diskOk = freeMB > 100; // >100MB
-	} catch (e) {
-		diskOk = false;
-	}
+                let diskOk = false;
+                try {
+                        const freeMB = os.freemem() / (1024 * 1024);
+                        diskOk = freeMB > 100; // >100MB
+                } catch (e) {
+                        diskOk = false;
+                }
 
-	res.json({
-		tesseract: tesseractOk,
-		poppler: popplerOk,
-		diskSpaceOK: diskOk
-	});
+                logger.info('[HEALTH] Resultado', {
+                        requestIp: req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown',
+                        tesseract: {
+                                ok: tesseractStatus.ok,
+                                fromCache: tesseractStatus.fromCache,
+                                lastChecked: tesseractStatus.lastChecked,
+                                path: tesseractStatus.path || null
+                        },
+                        poppler: {
+                                ok: popplerStatus.ok,
+                                fromCache: popplerStatus.fromCache,
+                                lastChecked: popplerStatus.lastChecked,
+                                path: popplerStatus.path || null
+                        },
+                        diskSpaceOK: diskOk
+                });
+
+                res.json({
+                        tesseract: tesseractStatus.ok,
+                        poppler: popplerStatus.ok,
+                        diskSpaceOK: diskOk
+                });
+        } catch (err) {
+                logger.error('[HEALTH] Error inesperado durante la comprobación de salud:', err);
+                res.status(500).json({ error: 'Error interno al evaluar el estado de salud' });
+        }
 });
 
 // ---------- Log de concurrencia y DPI ----------

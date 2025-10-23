@@ -1,76 +1,52 @@
-// DPI configurable desde .env
-const DPI = process.env.OCR_DPI ? String(process.env.OCR_DPI) : '300';
-
-const fs = require("fs");
-const path = require("path");
-const { PDFDocument } = require("pdf-lib");
+const fs = require('fs/promises');
+const { constants } = require('fs');
+const path = require('path');
+const { PDFDocument } = require('pdf-lib');
 const { spawn } = require('child_process');
 const logger = require('./logger');
+const { limit: concurrencyLimit } = require('./concurrency');
 
-const DEFAULT_PAGE_BATCH_SIZE = (() => {
-        const env = process.env.PDF_PAGE_BATCH_SIZE;
-        if (env) {
-                const n = parseInt(env, 10);
-                if (!Number.isNaN(n) && n > 0) {
-                        return n;
+const DPI = process.env.OCR_DPI ? String(process.env.OCR_DPI) : '300';
+
+async function ensureDir(dirPath) {
+        await fs.mkdir(dirPath, { recursive: true });
+}
+
+async function pathExists(filePath) {
+        if (!filePath) return false;
+        try {
+                await fs.access(filePath, constants.F_OK);
+                return true;
+        } catch (err) {
+                return false;
+        }
+}
+
+async function safeUnlink(filePath) {
+        if (!filePath) return;
+        try {
+                await fs.unlink(filePath);
+        } catch (err) {
+                if (err && err.code !== 'ENOENT') {
+                        logger.warn(`[CLEANUP] No se pudo eliminar ${filePath}: ${err.message}`);
                 }
         }
-        return 4;
-})();
-
-function determineBatchSize(totalPages) {
-        if (totalPages <= 1) {
-                return 1;
-        }
-        return Math.min(DEFAULT_PAGE_BATCH_SIZE, totalPages);
 }
 
-function ensureOutputDir(dir) {
-        if (!fs.existsSync(dir)) {
-                fs.mkdirSync(dir, { recursive: true });
-        }
-}
-
-function readPdfBuffer(pdfPath, providedBuffer) {
-        if (providedBuffer && Buffer.isBuffer(providedBuffer)) {
-                return providedBuffer;
-        }
-        return fs.readFileSync(pdfPath);
-}
-
-function createPdfDocLoader(pdfBuffer) {
-        let pdfDocPromise = null;
-        return async () => {
-                if (!pdfDocPromise) {
-                        pdfDocPromise = PDFDocument.load(pdfBuffer);
-                }
-                return pdfDocPromise;
-        };
-}
-
-function runPdftocairo(args, label) {
+async function runPdftocairo(args, pageNumber, context = 'normal') {
         return new Promise((resolve, reject) => {
                 const proc = spawn('pdftocairo', args);
                 let stdout = '';
                 let stderr = '';
-
-                proc.stdout.on('data', data => {
-                        stdout += data.toString();
-                });
-                proc.stderr.on('data', data => {
-                        stderr += data.toString();
-                });
-
-                proc.on('error', err => {
-                        reject(err);
-                });
-
+                proc.stdout.on('data', data => { stdout += data.toString(); });
+                proc.stderr.on('data', data => { stderr += data.toString(); });
+                proc.on('error', reject);
                 proc.on('close', code => {
                         if (stdout) {
-                                logger.info(`[Poppler][stdout][${label}]: ${stdout}`);
+                                logger.info(`[Poppler][stdout][${context} página ${pageNumber}]: ${stdout}`);
                         }
                         if (stderr) {
-                                logger.error(`[Poppler][stderr][${label}]: ${stderr}`);
+                                logger.error(`[Poppler][stderr][${context} página ${pageNumber}]: ${stderr}`);
                         }
                         if (code !== 0) {
                                 reject(new Error(`pdftocairo exited with code ${code}`));
@@ -81,332 +57,185 @@ function runPdftocairo(args, label) {
         });
 }
 
-async function convertSinglePageFallback({ page, pdfPath, outputDir, pdfBuffer, pdfDocLoader, onPageSuccess, onPageFailure }) {
-        const label = `fallback página ${page}`;
-        try {
-                const pdfDoc = await pdfDocLoader();
-                const newPdf = await PDFDocument.create();
-                const copiedPages = await newPdf.copyPages(pdfDoc, [page - 1]);
-                newPdf.addPage(copiedPages[0]);
-                const newPdfBytes = await newPdf.save();
-
-                const tempSinglePdf = path.join(outputDir, `page-${page}-single.pdf`);
-                fs.writeFileSync(tempSinglePdf, newPdfBytes);
-
-                const args = [
-                        '-png',
-                        '-r', DPI,
-                        '-f', '1',
-                        '-l', '1',
-                        tempSinglePdf,
-                        path.join(outputDir, `page-${page}-single`)
-                ];
-
-                const startTime = process.hrtime.bigint();
-                await runPdftocairo(args, label);
-                const endTime = process.hrtime.bigint();
-                const rasterSeconds = Number(endTime - startTime) / 1e9;
-
-                const fallbackImgPath = path.join(outputDir, `page-${page}-single-1.png`);
-                if (!fs.existsSync(fallbackImgPath)) {
-                        throw new Error(`Fallback image not generated for page ${page}: ${fallbackImgPath}`);
-                }
-
-                try {
-                        if (fs.existsSync(tempSinglePdf)) {
-                                fs.unlinkSync(tempSinglePdf);
-                        }
-                } catch (cleanupErr) {
-                        logger.warn(`[Fallback] No se pudo eliminar PDF temporal para página ${page}: ${cleanupErr}`);
-                }
-
-                if (onPageSuccess) {
-                        await onPageSuccess(page, fallbackImgPath, {
-                                rasterSeconds,
-                                fallback: true,
-                                rangeStart: page,
-                                rangeEnd: page
-                        });
-                }
-        } catch (err) {
-                logger.error(`[Fallback] Error al extraer/convertir página ${page}: ${err}`);
-                if (onPageFailure) {
-                        await onPageFailure(page, err);
-                } else if (onPageSuccess) {
-                        await onPageSuccess(page, null, {
-                                rasterSeconds: 0,
-                                fallback: true,
-                                rangeStart: page,
-                                rangeEnd: page,
-                                error: err
-                        });
-                }
-        }
-}
-
-async function convertPageRange({
-        pdfPath,
-        outputDir,
-        start,
-        end,
-        pdfBuffer,
-        pdfDocLoader,
-        onPageSuccess,
-        onPageFailure
-}) {
-        const label = start === end ? `página ${start}` : `rango ${start}-${end}`;
+async function convertPage(pdfPath, outputDir, pageNumber) {
+        const prefix = path.join(outputDir, 'page');
+        const imagePath = path.join(outputDir, `page-${pageNumber}.png`);
         const args = [
                 '-png',
                 '-r', DPI,
-                '-f', String(start),
-                '-l', String(end),
+                '-f', String(pageNumber),
+                '-l', String(pageNumber),
                 pdfPath,
-                path.join(outputDir, 'page')
+                prefix
         ];
-
-        logger.debug(`[Poppler] Iniciando rasterización ${label}`);
-        const startTime = process.hrtime.bigint();
-        try {
-                await runPdftocairo(args, label);
-        } catch (err) {
-                const elapsed = Number(process.hrtime.bigint() - startTime) / 1e9;
-                logger.error(`[Poppler] Error rasterizando ${label} tras ${elapsed.toFixed(3)}s: ${err}`);
-                for (let page = start; page <= end; page++) {
-                        await convertSinglePageFallback({
-                                page,
-                                pdfPath,
-                                outputDir,
-                                pdfBuffer,
-                                pdfDocLoader,
-                                onPageSuccess,
-                                onPageFailure
-                        });
-                }
-                return;
+        await runPdftocairo(args, pageNumber);
+        if (!(await pathExists(imagePath))) {
+                throw new Error(`Image not generated for page ${pageNumber}: ${imagePath}`);
         }
+        return imagePath;
+}
 
-        const totalSeconds = Number(process.hrtime.bigint() - startTime) / 1e9;
-        logger.info(`[Poppler] Rasterización ${label} completada en ${totalSeconds.toFixed(3)}s`);
-        const perPageSeconds = totalSeconds / (end - start + 1);
-
-        for (let page = start; page <= end; page++) {
-                const imgPath = path.join(outputDir, `page-${page}.png`);
-                if (fs.existsSync(imgPath)) {
-                        if (onPageSuccess) {
-                                await onPageSuccess(page, imgPath, {
-                                        rasterSeconds: perPageSeconds,
-                                        fallback: false,
-                                        rangeStart: start,
-                                        rangeEnd: end
-                                });
+function createPdfDocLoader(pdfPath) {
+        let pdfBytesPromise = null;
+        let pdfDocPromise = null;
+        return async () => {
+                if (!pdfDocPromise) {
+                        if (!pdfBytesPromise) {
+                                pdfBytesPromise = fs.readFile(pdfPath);
                         }
-                } else {
-                        logger.warn(`[Poppler] Imagen no encontrada para página ${page} tras rasterización ${label}. Iniciando fallback.`);
-                        await convertSinglePageFallback({
-                                page,
-                                pdfPath,
-                                outputDir,
-                                pdfBuffer,
-                                pdfDocLoader,
-                                onPageSuccess,
-                                onPageFailure
-                        });
+                        const bytes = await pdfBytesPromise;
+                        pdfDocPromise = PDFDocument.load(bytes);
                 }
+                return pdfDocPromise;
+        };
+}
+
+async function fallbackConvertSinglePage(pdfPath, outputDir, pageNumber, loadPdfDoc) {
+        const tempSinglePdf = path.join(outputDir, `page-${pageNumber}-single.pdf`);
+        try {
+                        const pdfDoc = await loadPdfDoc();
+                        const newPdf = await PDFDocument.create();
+                        const copiedPages = await newPdf.copyPages(pdfDoc, [pageNumber - 1]);
+                        newPdf.addPage(copiedPages[0]);
+                        const newPdfBytes = await newPdf.save();
+                        await fs.writeFile(tempSinglePdf, newPdfBytes);
+                        const fallbackPrefix = path.join(outputDir, `page-${pageNumber}-single`);
+                        const fallbackImgPath = path.join(outputDir, `page-${pageNumber}-single-1.png`);
+                        const args = [
+                                '-png',
+                                '-r', DPI,
+                                '-f', '1',
+                                '-l', '1',
+                                tempSinglePdf,
+                                fallbackPrefix
+                        ];
+                        await runPdftocairo(args, pageNumber, 'fallback');
+                        if (!(await pathExists(fallbackImgPath))) {
+                                throw new Error(`Fallback image not generated for page ${pageNumber}: ${fallbackImgPath}`);
+                        }
+                        return fallbackImgPath;
+        } finally {
+                        await safeUnlink(tempSinglePdf);
         }
 }
 
-
-// carga el archivo
-async function loadPdf(input) {
-	if (Buffer.isBuffer(input)) {
-		return await PDFDocument.load(input);
-	} else if (typeof input === "string") {
-		return await PDFDocument.load(fs.readFileSync(input));
-	}
-	throw new Error("Invalid PDF input");
-}
-
-// Devuelve el número de páginas del PDF
-function getPageCount(pdf) {
-	return pdf.getPages().length;
-}
-
-// Convierte cada página en imagen y guarda en outputDir
-// pdfPath: ruta al archivo PDF
-// noPages: número de páginas
-async function extractPagesAsImages(pdfPath, outputDir, noPages, options = {}) {
-        ensureOutputDir(outputDir);
-        const { pdfBuffer: providedBuffer } = options;
-        const pdfBuffer = readPdfBuffer(pdfPath, providedBuffer);
-        const pdfDocLoader = createPdfDocLoader(pdfBuffer);
-        const results = new Array(noPages).fill(null);
-        const errors = [];
-        const total = noPages;
-        let completed = 0;
-
-        const updateProgress = () => {
-                completed++;
-                const percent = ((completed / total) * 100).toFixed(1);
-                logger.info(`[Poppler] Progreso: ${percent}% (${completed}/${total})`);
-        };
-
-        const { limit: concurrencyLimit } = require('./concurrency');
-        const limit = concurrencyLimit;
-
-        const onPageSuccess = async (page, imagePath) => {
-                results[page - 1] = imagePath;
-                updateProgress();
-        };
-
-        const onPageFailure = async (page, err) => {
-                results[page - 1] = null;
-                errors.push({ page, err });
-                updateProgress();
-        };
-
-        const batchSize = determineBatchSize(noPages);
-        const tasks = [];
-        for (let start = 1; start <= noPages; start += batchSize) {
-                const end = Math.min(noPages, start + batchSize - 1);
-                tasks.push(limit(() => convertPageRange({
-                        pdfPath,
-                        outputDir,
-                        start,
-                        end,
-                        pdfBuffer,
-                        pdfDocLoader,
-                        onPageSuccess,
-                        onPageFailure
-                })));
-        }
-
-        await Promise.all(tasks);
-
-        if (errors.length > 0) {
-                logger.warn(`[Poppler] ${errors.length} páginas no se pudieron rasterizar correctamente en la pasada principal.`);
-        }
-
-        return results;
-}
-
-// Streaming extractor: async generator que va entregando cada imagen tan pronto se crea.
-// Permite empezar OCR sin esperar a que todas las imágenes estén generadas.
-async function* extractPagesAsImagesStream(pdfPath, outputDir, noPages, options = {}) {
-        ensureOutputDir(outputDir);
-        const { pdfBuffer: providedBuffer } = options;
-        const pdfBuffer = readPdfBuffer(pdfPath, providedBuffer);
-        const pdfDocLoader = createPdfDocLoader(pdfBuffer);
-        const { limit: concurrencyLimit } = require('./concurrency');
-        const limit = concurrencyLimit;
-
-        const controllers = Array.from({ length: noPages }, () => {
-                let resolve;
-                const promise = new Promise((res) => {
-                        resolve = res;
-                });
-                return { promise, resolve };
-        });
-
-        const onPageSuccess = async (page, imagePath, meta = {}) => {
-                const controller = controllers[page - 1];
-                if (!controller) {
-                        return;
-                }
-                controller.resolve({
-                        pageNumber: page,
-                        imagePath,
-                        rasterTimeSeconds: typeof meta.rasterSeconds === 'number' ? meta.rasterSeconds : null,
-                        fallback: Boolean(meta.fallback),
-                        rangeStart: meta.rangeStart,
-                        rangeEnd: meta.rangeEnd,
-                        error: meta.error || null
-                });
-        };
-
-        const onPageFailure = async (page, error) => {
-                const controller = controllers[page - 1];
-                if (!controller) {
-                        return;
-                }
-                controller.resolve({
-                        pageNumber: page,
-                        imagePath: null,
-                        rasterTimeSeconds: null,
-                        fallback: true,
-                        rangeStart: page,
-                        rangeEnd: page,
-                        error: error || new Error(`No image generated for page ${page}`)
-                });
-        };
-
-        const batchSize = determineBatchSize(noPages);
-        const tasks = [];
-        for (let start = 1; start <= noPages; start += batchSize) {
-                const end = Math.min(noPages, start + batchSize - 1);
-                tasks.push(limit(() => convertPageRange({
-                        pdfPath,
-                        outputDir,
-                        start,
-                        end,
-                        pdfBuffer,
-                        pdfDocLoader,
-                        onPageSuccess,
-                        onPageFailure
-                })));
-        }
-
-        for (let index = 0; index < controllers.length; index++) {
-                let result;
+async function convertPageWithFallback(pdfPath, outputDir, pageNumber, loadPdfDoc) {
+        try {
+                return await convertPage(pdfPath, outputDir, pageNumber);
+        } catch (err) {
+                logger.error(`[Poppler] Error al convertir página ${pageNumber}: ${err}`);
                 try {
-                        result = await controllers[index].promise;
-                } catch (err) {
-                        logger.error(`[Stream] Error en promesa de página ${index + 1}: ${err}`);
-                        result = {
-                                pageNumber: index + 1,
-                                imagePath: null,
-                                rasterTimeSeconds: null,
-                                fallback: true,
-                                rangeStart: index + 1,
-                                rangeEnd: index + 1,
-                                error: err
-                        };
+                        return await fallbackConvertSinglePage(pdfPath, outputDir, pageNumber, loadPdfDoc);
+                } catch (fallbackErr) {
+                        logger.error(`[Fallback] Error al extraer/converter página ${pageNumber}: ${fallbackErr}`);
+                        return null;
                 }
-                yield result;
         }
-
-        await Promise.allSettled(tasks);
 }
 
-// Elimina imágenes temporales
-function cleanupTempImages(outputDir) {
-	if (fs.existsSync(outputDir)) {
-		const files = fs.readdirSync(outputDir);
-		files.forEach(file => {
-			if (file.endsWith(".png")) {
-				fs.unlinkSync(path.join(outputDir, file));
-			}
-		});
-		// Opcional: eliminar el directorio si está vacío
-		if (fs.readdirSync(outputDir).length === 0) {
-			fs.rmdirSync(outputDir);
-		}
-	}
+function buildPageTasks(pdfPath, outputDir, noPages, loadPdfDoc) {
+        const tasks = [];
+        let completed = 0;
+        const total = noPages;
+        for (let i = 1; i <= noPages; i++) {
+                const pageNumber = i;
+                const task = concurrencyLimit(async () => {
+                        try {
+                                return await convertPageWithFallback(pdfPath, outputDir, pageNumber, loadPdfDoc);
+                        } finally {
+                                completed++;
+                                const percent = total > 0 ? ((completed / total) * 100).toFixed(1) : '100.0';
+                                logger.info(`[Poppler] Progreso: ${percent}% (${completed}/${total})`);
+                        }
+                });
+                tasks.push(task);
+        }
+        return tasks;
 }
 
-// Verifica que el PDF sea válido
-function validatePdf(input) {
-	try {
-		if (Buffer.isBuffer(input)) {
-			PDFDocument.load(input);
-		} else if (typeof input === "string") {
-			PDFDocument.load(fs.readFileSync(input));
-		} else {
-			throw new Error("Invalid PDF input");
-		}
-		return true;
-	} catch (err) {
-		return false;
-	}
+async function loadPdf(input) {
+        if (Buffer.isBuffer(input)) {
+                return PDFDocument.load(input);
+        }
+        if (typeof input === 'string') {
+                const data = await fs.readFile(input);
+                return PDFDocument.load(data);
+        }
+        throw new Error('Invalid PDF input');
+}
+
+function getPageCount(pdf) {
+        return pdf.getPages().length;
+}
+
+async function extractPagesAsImages(pdfPath, outputDir, noPages) {
+        await ensureDir(outputDir);
+        const loadPdfDoc = createPdfDocLoader(pdfPath);
+        const tasks = buildPageTasks(pdfPath, outputDir, noPages, loadPdfDoc);
+        return Promise.all(tasks);
+}
+
+async function* extractPagesAsImagesStream(pdfPath, outputDir, noPages) {
+        await ensureDir(outputDir);
+        const loadPdfDoc = createPdfDocLoader(pdfPath);
+        const tasks = buildPageTasks(pdfPath, outputDir, noPages, loadPdfDoc);
+        for (const task of tasks) {
+                try {
+                        const result = await task;
+                        yield result;
+                } catch (err) {
+                        logger.error(`[Stream] Error en tarea de página: ${err}`);
+                        yield null;
+                }
+        }
+}
+
+async function cleanupTempImages(outputDir, retainPaths = new Set()) {
+        if (!outputDir) return;
+        try {
+                const entries = await fs.readdir(outputDir, { withFileTypes: true });
+                for (const entry of entries) {
+                        const fullPath = path.join(outputDir, entry.name);
+                        if (retainPaths.has(fullPath)) {
+                                continue;
+                        }
+                        try {
+                                if (entry.isDirectory()) {
+                                        await fs.rm(fullPath, { recursive: true, force: true });
+                                } else {
+                                        await fs.unlink(fullPath);
+                                }
+                        } catch (err) {
+                                if (err && err.code !== 'ENOENT') {
+                                        logger.warn(`[CLEANUP] No se pudo eliminar ${fullPath}: ${err.message}`);
+                                }
+                        }
+                }
+                const remaining = await fs.readdir(outputDir);
+                if (remaining.length === 0) {
+                        await fs.rmdir(outputDir);
+                }
+        } catch (err) {
+                if (err && err.code !== 'ENOENT') {
+                        logger.warn(`[CLEANUP] No se pudo limpiar directorio ${outputDir}: ${err.message}`);
+                }
+        }
+}
+
+async function validatePdf(input) {
+        try {
+                if (Buffer.isBuffer(input)) {
+                        await PDFDocument.load(input);
+                } else if (typeof input === 'string') {
+                        const data = await fs.readFile(input);
+                        await PDFDocument.load(data);
+                } else {
+                        throw new Error('Invalid PDF input');
+                }
+                return true;
+        } catch (err) {
+                return false;
+        }
 }
 
 module.exports = {
