@@ -17,18 +17,9 @@ const logger = require('./logger');
 const promClient = require('prom-client');
 const rateLimit = require('express-rate-limit');
 const os = require('os');
-const { randomUUID } = require('crypto');
-const FileReferenceTracker = require('./utils/fileReferenceTracker');
+const { spawn } = require('child_process');
 
-async function fileExists(filePath) {
-        if (!filePath) return false;
-        try {
-                await fs.access(filePath, constants.F_OK);
-                return true;
-        } catch (err) {
-                return false;
-        }
-}
+const fsPromises = fs.promises;
 
 // ---------- Configuración de rate limiting ----------
 // --- Arreglo para evitar "undefined request.ip" ---
@@ -76,6 +67,29 @@ const httpRequestDuration = new promClient.Histogram({
 	help: 'Duración de requests HTTP en segundos',
 	labelNames: ['method', 'route', 'status']
 });
+const healthRequestCounter = new promClient.Counter({
+	name: 'health_requests_total',
+	help: 'Total de requests HTTP al endpoint /health'
+});
+const healthProcessSpawnCounter = new promClient.Counter({
+	name: 'health_process_spawns_total',
+	help: 'Procesos lanzados por el endpoint /health',
+	labelNames: ['binary']
+});
+
+const parsePositiveInt = (value, fallback) => {
+        const parsed = parseInt(value, 10);
+        if (Number.isFinite(parsed) && parsed > 0) {
+                return parsed;
+        }
+        return fallback;
+};
+
+const HEALTH_ACCESS_TTL_MS = parsePositiveInt(process.env.HEALTH_ACCESS_TTL_MS, 60 * 1000);
+const HEALTH_SPAWN_TTL_MS = parsePositiveInt(process.env.HEALTH_SPAWN_TTL_MS, 5 * 60 * 1000);
+
+const binaryAccessCache = new Map();
+const healthSpawnCache = new Map();
 
 // Registrar métricas por defecto
 promClient.collectDefaultMetrics();
@@ -458,42 +472,172 @@ app.post('/api/process-pdf', async (req, res) => {
 		}
 
 
+async function locateExecutable(binaryName) {
+        const now = Date.now();
+        const cachedEntry = binaryAccessCache.get(binaryName);
+        if (cachedEntry && (now - cachedEntry.timestamp) < HEALTH_ACCESS_TTL_MS) {
+                if (cachedEntry.path) {
+                        logger.debug(`[HEALTH] Usando ruta en caché para ${binaryName}: ${cachedEntry.path}`);
+                }
+                return cachedEntry.path;
+        }
+
+        const pathVariable = process.env.PATH ? process.env.PATH.split(path.delimiter) : [];
+        const candidateNames = process.platform === 'win32'
+                ? [binaryName, `${binaryName}.exe`, `${binaryName}.cmd`, `${binaryName}.bat`]
+                : [binaryName];
+
+        for (const base of pathVariable) {
+                if (!base) {
+                        continue;
+                }
+                for (const candidate of candidateNames) {
+                        const candidatePath = path.join(base, candidate);
+                        try {
+                                await fsPromises.access(candidatePath, fs.constants.X_OK);
+                                binaryAccessCache.set(binaryName, { timestamp: Date.now(), path: candidatePath });
+                                logger.debug(`[HEALTH] Detectado ${binaryName} en ${candidatePath}`);
+                                return candidatePath;
+                        } catch (err) {
+                                // continuar con el siguiente candidato
+                        }
+                }
+        }
+
+        binaryAccessCache.set(binaryName, { timestamp: Date.now(), path: null });
+        logger.warn(`[HEALTH] No se encontró ${binaryName} en PATH`);
+        return null;
+}
+
+async function runSpawnWithCache(binaryName, args) {
+        const now = Date.now();
+        const cacheEntry = healthSpawnCache.get(binaryName);
+
+        if (cacheEntry?.inFlightPromise) {
+                logger.debug(`[HEALTH] Esperando resultado en curso para ${binaryName}`);
+                return cacheEntry.inFlightPromise;
+        }
+
+        if (cacheEntry && cacheEntry.timestamp && (now - cacheEntry.timestamp) < HEALTH_SPAWN_TTL_MS) {
+                logger.debug(`[HEALTH] Usando resultado en caché para ${binaryName} (edad: ${now - cacheEntry.timestamp} ms)`);
+                return {
+                        success: cacheEntry.success,
+                        fromCache: true,
+                        lastChecked: cacheEntry.timestamp
+                };
+        }
+
+        logger.info(`[HEALTH] TTL expirado: ejecutando ${binaryName} ${args.join(' ')} para verificación`);
+        healthProcessSpawnCounter.inc({ binary: binaryName });
+
+        const spawnPromise = new Promise((resolve) => {
+                let settled = false;
+
+                const finalize = (success, error) => {
+                        if (settled) return;
+                        settled = true;
+                        const timestamp = Date.now();
+                        resolve({
+                                success,
+                                fromCache: false,
+                                lastChecked: timestamp,
+                                error
+                        });
+                };
+
+                let child;
+                try {
+                        child = spawn(binaryName, args);
+                } catch (error) {
+                        logger.error(`[HEALTH] Excepción al lanzar ${binaryName}: ${error.message}`);
+                        finalize(false, error);
+                        return;
+                }
+
+                child.on('error', (error) => {
+                        logger.warn(`[HEALTH] Error al ejecutar ${binaryName}: ${error.message}`);
+                        finalize(false, error);
+                });
+
+                child.on('close', (code) => {
+                        if (code !== 0) {
+                                logger.warn(`[HEALTH] ${binaryName} finalizó con código ${code}`);
+                        } else {
+                                logger.debug(`[HEALTH] ${binaryName} finalizó correctamente`);
+                        }
+                        finalize(code === 0);
+                });
+        });
+
+        healthSpawnCache.set(binaryName, { inFlightPromise: spawnPromise });
+        const result = await spawnPromise;
+        healthSpawnCache.set(binaryName, { timestamp: result.lastChecked, success: result.success });
+        return result;
+}
+
+async function checkBinaryHealth(binaryName, args) {
+        const executablePath = await locateExecutable(binaryName);
+        if (!executablePath) {
+                return {
+                        ok: false,
+                        fromCache: false,
+                        lastChecked: null
+                };
+        }
+
+        const spawnResult = await runSpawnWithCache(binaryName, args);
+        return {
+                ok: spawnResult.success,
+                fromCache: spawnResult.fromCache,
+                lastChecked: spawnResult.lastChecked,
+                path: executablePath
+        };
+}
+
 // ---------- Endpoint de salud ----------
 app.get('/health', async (req, res) => {
-	// Verificar Tesseract
-	const tesseractOk = await new Promise(resolve => {
-		const { spawn } = require('child_process');
-		const proc = spawn('tesseract', ['--version']);
-		proc.on('error', () => resolve(false));
-		proc.on('close', code => resolve(code === 0));
-	});
+        healthRequestCounter.inc();
 
-	// Verificar Poppler (pdftocairo)
-	const popplerOk = await new Promise(resolve => {
-		const { spawn } = require('child_process');
-		// -v no siempre devuelve 0 en pdftocairo; simplemente comprobar existencia ejecutable
-		const proc = spawn('pdftocairo', ['-v']);
-		proc.on('error', () => resolve(false));
-		proc.on('close', code => {
-			// pdftocairo suele enviar salida por stderr y cerrar con 0; considerar 0 como OK
-			resolve(code === 0);
-		});
-	});
+        try {
+                const [tesseractStatus, popplerStatus] = await Promise.all([
+                        checkBinaryHealth('tesseract', ['--version']),
+                        checkBinaryHealth('pdftocairo', ['-v'])
+                ]);
 
-	// Verificar memoria libre (indicador simple)
-	let diskOk = false;
-	try {
-		const freeMB = os.freemem() / (1024 * 1024);
-		diskOk = freeMB > 100; // >100MB
-	} catch (e) {
-		diskOk = false;
-	}
+                let diskOk = false;
+                try {
+                        const freeMB = os.freemem() / (1024 * 1024);
+                        diskOk = freeMB > 100; // >100MB
+                } catch (e) {
+                        diskOk = false;
+                }
 
-	res.json({
-		tesseract: tesseractOk,
-		poppler: popplerOk,
-		diskSpaceOK: diskOk
-	});
+                logger.info('[HEALTH] Resultado', {
+                        requestIp: req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown',
+                        tesseract: {
+                                ok: tesseractStatus.ok,
+                                fromCache: tesseractStatus.fromCache,
+                                lastChecked: tesseractStatus.lastChecked,
+                                path: tesseractStatus.path || null
+                        },
+                        poppler: {
+                                ok: popplerStatus.ok,
+                                fromCache: popplerStatus.fromCache,
+                                lastChecked: popplerStatus.lastChecked,
+                                path: popplerStatus.path || null
+                        },
+                        diskSpaceOK: diskOk
+                });
+
+                res.json({
+                        tesseract: tesseractStatus.ok,
+                        poppler: popplerStatus.ok,
+                        diskSpaceOK: diskOk
+                });
+        } catch (err) {
+                logger.error('[HEALTH] Error inesperado durante la comprobación de salud:', err);
+                res.status(500).json({ error: 'Error interno al evaluar el estado de salud' });
+        }
 });
 
 // ---------- Log de concurrencia y DPI ----------
