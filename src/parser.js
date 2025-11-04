@@ -15,22 +15,22 @@ function normalize(str) {
 
 /**
  * Valida si el texto contiene keywords que indican orientación correcta del documento
+ * optimizado para tolerar variantes de ocr y errores comunes
  * @param {string} text - Texto OCR de la página
  * @param {string} lang - 'spa' o 'eng'
  * @returns {boolean} true si contiene keywords de documento válido
  */
 function hasValidOrientation(text, lang) {
 	if (!text || text.length < 10) return false;
-	
+
 	const normalizedText = normalize(text);
-	
+
 	if (lang === 'spa') {
-		// Buscar "DETALLES RECIBO" o "DETALLES DE RECIBO" con variantes
-		return /detalles?\s*recibo/i.test(text) || 
+		// regex original que funciona - revertido temporalmente
+		return /detalles?\s*recibo/i.test(text) ||
 		       /detalles?\s*de\s*recibo/i.test(text) ||
 		       /detalles?\s*del?\s*recibo/i.test(text);
 	} else if (lang === 'eng') {
-		// Buscar "Proof of Receipt" o "Proof of Delivery" con variantes
 		return /proof\s*of\s*receipt/i.test(text) ||
 		       /proof\s*of\s*delivery/i.test(text) ||
 		       /receipt\s*details/i.test(text);
@@ -66,7 +66,7 @@ function isRelevantPage(text, keywords) {
  * Procesa una página: si es relevante, devuelve el texto y el número de página
  * @param {string} text
  * @param {number} pageNumber
- * @param {Array<string|RegExp>} [keywords]
+ * @param {Array<string|RegExp>} [keywords] - opcional, si no se provee usa keywords por defecto
  * @returns {object|null}
  */
 function parsePage(text, pageNumber, keywords) {
@@ -79,28 +79,12 @@ function parsePage(text, pageNumber, keywords) {
 /**
  * Procesa todas las páginas y devuelve solo las relevantes
  * @param {Array<{text: string, pageNumber: number}>} pages
- * @param {Array<string|RegExp>} [keywords]
+ * @param {Array<string|RegExp>} [keywords] - opcional, si no se provee usa keywords por defecto
  * @returns {Array<{pageNumber: number, text: string}>}
  */
 function parseDocument(pages, keywords) {
 	return pages
 		.map(page => parsePage(page.text, page.pageNumber, keywords))
-		.filter(result => result !== null);
-}
-
-// Procesa una página: si es relevante, devuelve el texto y el número de página
-function parsePage(text, pageNumber) {
-	if (isRelevantPage(text)) {
-		return { pageNumber, text };
-	}
-	return null;
-}
-
-// Procesa todas las páginas y devuelve solo las relevantes
-function parseDocument(pages) {
-	// pages: array de { text, pageNumber }
-	return pages
-		.map(page => parsePage(page.text, page.pageNumber))
 		.filter(result => result !== null);
 }
 

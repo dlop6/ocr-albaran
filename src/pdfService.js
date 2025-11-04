@@ -284,6 +284,7 @@ module.exports = {
 	loadPdf,
 	getPageCount,
 	extractPagesAsImages,
+	extractPagesAsImagesStream,
 	cleanupTempImages,
 	validatePdf
 };

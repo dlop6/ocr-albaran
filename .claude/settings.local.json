@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ping:*)",
+      "Bash(nul)",
+      "Bash(taskkill:*)",
+      "Bash(findstr:*)",
+      "Bash(node scripts/send_request.js:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

@@ -256,7 +256,8 @@ app.post('/api/process-pdf', async (req, res) => {
 						const quick = await ocrService.applyOcrToImage(rotatedPath, tesseractLang, false);
 						const text = (quick && quick.text) ? quick.text : '';
 						const cleaned = text.replace(/\s+/g, '');
-						const MIN_CHARS_FOR_KEEP = 30; // umbral de caracteres no blancos
+						// umbral ajustado a 50 para balance entre falsos positivos y páginas válidas
+						const MIN_CHARS_FOR_KEEP = 50;
 						if (cleaned.length >= MIN_CHARS_FOR_KEEP) {
 							keptByQuickOcr = true;
 							// OPTIMIZACIÓN: Guardar resultado completo para reutilizar
@@ -328,9 +329,6 @@ app.post('/api/process-pdf', async (req, res) => {
 		for (const pageNumber of paginasBlancas) {
 			ocrResults[pageNumber - 1] = null;
 		}
-		// Esperar a que todos los OCR terminen
-		await Promise.all(tasks);
-		
 		// Esperar a que todos los OCR terminen
 		await Promise.all(tasks);
 
