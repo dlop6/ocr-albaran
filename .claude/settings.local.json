@@ -5,7 +5,8 @@
       "Bash(nul)",
       "Bash(taskkill:*)",
       "Bash(findstr:*)",
-      "Bash(node scripts/send_request.js:*)"
+      "Bash(node scripts/send_request.js:*)",
+      "Bash(powershell:*)"
     ],
     "deny": [],
     "ask": []
