@@ -9,7 +9,7 @@
       "numeroRecibo": "211306",
       "statusError": false,
       "mensaje": "",
-      "timeSeconds": 36.1893595
+      "timeSeconds": 23.1943441
     },
     {
       "pag": 9,
@@ -18,7 +18,7 @@
       "numeroRecibo": "211307",
       "statusError": false,
       "mensaje": "",
-      "timeSeconds": 30.8304073
+      "timeSeconds": 19.985415
     },
     {
       "pag": 13,
@@ -27,7 +27,7 @@
       "numeroRecibo": "211309",
       "statusError": false,
       "mensaje": "",
-      "timeSeconds": 31.3909482
+      "timeSeconds": 21.6703742
     },
     {
       "pag": 16,
@@ -36,7 +36,7 @@
       "numeroRecibo": "211305",
       "statusError": false,
       "mensaje": "",
-      "timeSeconds": 32.5770538
+      "timeSeconds": 22.9155168
     },
     {
       "pag": 19,
@@ -45,7 +45,7 @@
       "numeroRecibo": "211304",
       "statusError": false,
       "mensaje": "",
-      "timeSeconds": 26.6794622
+      "timeSeconds": 21.2982912
     },
     {
       "pag": 22,
@@ -54,7 +54,7 @@
       "numeroRecibo": "211308",
       "statusError": false,
       "mensaje": "",
-      "timeSeconds": 26.5361083
+      "timeSeconds": 21.6687186
     },
     {
       "pag": 28,
@@ -63,7 +63,7 @@
       "numeroRecibo": "211311",
       "statusError": false,
       "mensaje": "",
-      "timeSeconds": 23.189614
+      "timeSeconds": 20.0663428
     },
     {
       "pag": 33,
@@ -72,7 +72,7 @@
       "numeroRecibo": "211310",
       "statusError": false,
       "mensaje": "",
-      "timeSeconds": 22.0140164
+      "timeSeconds": 19.4936746
     }
   ],
   "paginasBlancas": [],

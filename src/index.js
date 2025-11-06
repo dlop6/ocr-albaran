@@ -16,6 +16,7 @@ const logger = require('./logger');
 const promClient = require('prom-client');
 const rateLimit = require('express-rate-limit');
 const os = require('os');
+const axios = require('axios');
 
 // ---------- Configuración de rate limiting ----------
 // --- Arreglo para evitar "undefined request.ip" ---
@@ -132,13 +133,24 @@ const DEFAULT_CONCURRENCY = process.env.OCR_CONCURRENCY
 	? parseInt(process.env.OCR_CONCURRENCY, 10)
 	: 5;
 
+// Bizagi config desde .env
+const BIZAGI_BASE_URL = process.env.BIZAGI_BASE_URL || '';
+const BIZAGI_TOKEN = process.env.BIZAGI_TOKEN || '';
+
+// Estado interno simple para marcar callbacks fallidos (en memoria)
+const jobCallbackState = new Map();
+
 // ---------- Endpoint de procesamiento de PDF ----------
 app.post('/api/process-pdf', async (req, res) => {
-	const { pdfBase64, idioma, albaranesEsperados } = req.body;
+	const { pdfBase64, idioma, albaranesEsperados, caseId } = req.body;
 	// Validar idioma
 	const idiomaInput = (typeof idioma === 'string') ? idioma.trim().toUpperCase() : '';
 	if (!['ESP', 'ING'].includes(idiomaInput)) {
 		return res.status(400).json({ error: 'El campo "idioma" es obligatorio y debe ser "ESP" o "ING".' });
+	}
+	// Validar caseId (nuevo)
+	if (typeof caseId === 'undefined' || !Number.isInteger(Number(caseId))) {
+		return res.status(400).json({ error: 'El campo "caseId" es obligatorio y debe ser un entero.' });
 	}
 	// Mapear idioma a código de Tesseract
 	const tesseractLang = idiomaInput === 'ESP' ? 'spa' : 'eng';
@@ -166,300 +178,193 @@ app.post('/api/process-pdf', async (req, res) => {
 		return res.status(400).json({ error: 'Invalid base64 format' });
 	}
 
-	const tempPdfPath = path.join(os.tmpdir(), 'temp.pdf');
-	const outputDir = path.join(os.tmpdir(), 'temp_images');
-	let imagePaths = [];
-	let pageCount = 0;
-	let pdfSizeMB = 0;
+	// Guardar PDF temporalmente en un directorio único para evitar colisiones
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-'));
+	const tempPdfPath = path.join(tempDir, 'input.pdf');
+	const outputDir = path.join(tempDir, 'images');
+	fs.writeFileSync(tempPdfPath, Buffer.from(pdfBase64, 'base64'));
 
-	try {
-		const pdfBuffer = Buffer.from(pdfBase64, 'base64');
-
-		// Validación del PDF (pdfService debe exponer validatePdf)
-		if (typeof pdfService.validatePdf === 'function') {
-			if (!pdfService.validatePdf(pdfBuffer)) {
-				return res.status(400).json({ error: 'El archivo proporcionado no es un PDF válido' });
-			}
-		}
-
-		// Guardar temporalmente
-		fs.writeFileSync(tempPdfPath, pdfBuffer);
-
-		// Cargar PDF y obtener páginas
-		const pdfDoc = await pdfService.loadPdf(pdfBuffer);
-		pageCount = pdfService.getPageCount(pdfDoc);
-		pdfSizeMB = Number((pdfBuffer.length / (1024 * 1024)).toFixed(2));
-
-		if (pageCount > 60) {
-			logger.error(`PDF tiene ${pageCount} páginas, excede el límite de 60.`);
-			throw new Error(`PDF tiene ${pageCount} páginas, excede el límite de 60.`);
-		}
-
-		// Extraer páginas a imágenes (pdfService.extractPagesAsImages debe crear outputDir)
-		const startTotal = process.hrtime();
-		const limit = concurrencyLimit;
-		let allImagePaths = [];
-		// 1. Obtener todas las rutas de imágenes y asociar con número de página
-		if (typeof pdfService.extractPagesAsImagesStream === 'function') {
-			let pageIndex = 0;
-			for await (const imagePath of pdfService.extractPagesAsImagesStream(tempPdfPath, outputDir, pageCount)) {
-				allImagePaths.push({ imagePath, pageNumber: pageIndex + 1 });
-				pageIndex++;
-			}
-		} else {
-			imagePaths = await pdfService.extractPagesAsImages(tempPdfPath, outputDir, pageCount);
-			for (let i = 0; i < imagePaths.length; i++) {
-				allImagePaths.push({ imagePath: imagePaths[i], pageNumber: i + 1 });
-			}
-		}
-
-		// 2. Filtrar páginas casi blancas antes de OSD/OCR, con excepción quick-OCR
-		// paginasBlancas: números de páginas descartadas
-		// imagenesValidas: rutas que se enviarán a OCR completo
-		// quickOcrCache: almacenar resultados de quick-OCR para reutilización
-		const paginasBlancas = [];
-		const imagenesValidas = [];
-		const quickOcrCache = {}; // Map: pageNumber -> { text, confidence, angle }
-		
-		for (const { imagePath, pageNumber } of allImagePaths) {
-			if (!imagePath) {
-				paginasBlancas.push(pageNumber);
-				continue;
-			}
-			let esBlanca = false;
+	// Encolar job asincrónico (fire-and-forget). Devolver 200 OK inmediatamente.
+	(async function processPdfJob() {
+			let imagePaths = [];
+			let pageCount = 0;
+			let pdfSizeMB = 0;
+			let callbackFailedFlag = false;
 			try {
-				esBlanca = await isImageBlank(imagePath);
-			} catch (err) {
-				logger.warn(`[BLANK DETECTION] Error analizando página ${pageNumber}: ${err.message}`);
-			}
-
-			if (esBlanca) {
-				// quick-OCR exception: detectar orientación, rotar temporalmente y hacer un OCR liviano
-				let keptByQuickOcr = false;
-				let quickOcrResult = null;
-				
-				try {
-					const angle = await ocrService.detectOrientationWithOSD(imagePath);
-					let rotatedPath = imagePath;
-					let createdRotated = false;
-					if (angle !== null && angle !== 0) {
-						try {
-							rotatedPath = await ocrService.rotateImage(imagePath, angle);
-							createdRotated = true;
-						} catch (rotateErr) {
-							logger.warn(`[BLANK->QUICK OCR] No se pudo rotar página ${pageNumber}: ${rotateErr.message}`);
-							rotatedPath = imagePath;
-						}
+				const pdfBuffer = fs.readFileSync(tempPdfPath);
+				// Validación del PDF
+				if (typeof pdfService.validatePdf === 'function') {
+					if (!pdfService.validatePdf(pdfBuffer)) {
+						throw new Error('El archivo proporcionado no es un PDF válido');
 					}
-					// Ejecutar OCR rápido sobre la imagen (rotada si se creó)
-					try {
-						const quick = await ocrService.applyOcrToImage(rotatedPath, tesseractLang, false);
-						const text = (quick && quick.text) ? quick.text : '';
-						const cleaned = text.replace(/\s+/g, '');
-						// umbral ajustado a 50 para balance entre falsos positivos y páginas válidas
-						const MIN_CHARS_FOR_KEEP = 50;
-						if (cleaned.length >= MIN_CHARS_FOR_KEEP) {
-							keptByQuickOcr = true;
-							// OPTIMIZACIÓN: Guardar resultado completo para reutilizar
-							quickOcrResult = {
-								text: quick.text,
-								confidence: quick.confidence || 0,
-								angle: angle || 0,
-								osd: true
-							};
-							quickOcrCache[pageNumber] = quickOcrResult;
-							imagenesValidas.push({ imagePath, pageNumber });
-							logger.info(`[BLANK->OCR] Página ${pageNumber} conservada por quick-OCR (${cleaned.length} chars). Resultado cacheado.`);
-						}
-					} catch (quickErr) {
-						logger.warn(`[BLANK->QUICK OCR] Error OCR rápido página ${pageNumber}: ${quickErr.message}`);
+				}
+				// Cargar PDF y obtener páginas
+				const pdfDoc = await pdfService.loadPdf(pdfBuffer);
+				pageCount = pdfService.getPageCount(pdfDoc);
+				pdfSizeMB = Number((pdfBuffer.length / (1024 * 1024)).toFixed(2));
+				if (pageCount > 60) throw new Error(`PDF tiene ${pageCount} páginas, excede el límite de 60.`);
+
+				// Extraer páginas a imágenes
+				const startTotal = process.hrtime();
+				const limit = concurrencyLimit;
+				let allImagePaths = [];
+				if (typeof pdfService.extractPagesAsImagesStream === 'function') {
+					let pageIndex = 0;
+					for await (const imagePath of pdfService.extractPagesAsImagesStream(tempPdfPath, outputDir, pageCount)) {
+						allImagePaths.push({ imagePath, pageNumber: pageIndex + 1 });
+						pageIndex++;
 					}
-					// limpiar imagen rotada temporal si se creó
-					try {
-						if (createdRotated && rotatedPath && fs.existsSync(rotatedPath)) fs.unlinkSync(rotatedPath);
-					} catch (e) { /* ignore */ }
-				} catch (err) {
-					logger.warn(`[BLANK->QUICK OCR] Error en excepción quick-OCR para página ${pageNumber}: ${err.message}`);
-				}
-
-				if (!keptByQuickOcr) {
-					paginasBlancas.push(pageNumber);
-					logger.info(`[BLANK] Página ${pageNumber} descartada por ser casi en blanco.`);
-					try { if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath); } catch (e) { /* ignore */ }
-				}
-			} else {
-				imagenesValidas.push({ imagePath, pageNumber });
-			}
-		}
-		if (paginasBlancas.length > 0) {
-			logger.info(`[BLANK] Páginas descartadas antes de análisis: ${paginasBlancas.join(', ')}`);
-		}
-		logger.info(`[QUICK-OCR CACHE] ${Object.keys(quickOcrCache).length} páginas con resultado cacheado para reutilización.`);
-
-		// 3. Procesar solo imágenes válidas con OSD/OCR
-		const ocrResults = new Array(pageCount);
-		const tasks = [];
-		for (const { imagePath, pageNumber } of imagenesValidas) {
-			const i = pageNumber - 1;
-			const task = limit(async () => {
-				const startPage = process.hrtime();
-				// OPTIMIZACIÓN: Pasar resultado de quick-OCR si existe para reutilización
-				const cachedQuickOcr = quickOcrCache[pageNumber] || null;
-				const ocrResult = await ocrService.processPageWithOcr(imagePath, tesseractLang, cachedQuickOcr);
-				const pageElapsed = process.hrtime(startPage);
-				const pageSeconds = pageElapsed[0] + pageElapsed[1] / 1e9;
-				pageProcessDuration.observe(pageSeconds);
-				if (ocrResult) {
-					ocrResults[i] = {
-						pageNumber,
-						text: ocrResult.text,
-						confidence: ocrResult.confidence,
-						angle: ocrResult.angle,
-						osd: ocrResult.osd || false,
-						timeSeconds: pageSeconds
-					};
 				} else {
-					ocrResults[i] = null;
-				}
-				try { if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath); } catch (e) { /* ignore */ }
-			});
-			tasks.push(task);
-		}
-		// Las páginas blancas quedan como null en ocrResults
-		for (const pageNumber of paginasBlancas) {
-			ocrResults[pageNumber - 1] = null;
-		}
-		// Esperar a que todos los OCR terminen
-		await Promise.all(tasks);
-
-		const elapsedTotal = process.hrtime(startTotal);
-		const elapsedSeconds = elapsedTotal[0] + elapsedTotal[1] / 1e9;
-		pdfProcessDuration.observe(elapsedSeconds);
-
-		// 1. Filtrar páginas relevantes usando parser.parseDocument
-		const pagesForParser = ocrResults
-			.map((r) => r ? { text: r.text, pageNumber: r.pageNumber } : null)
-			.filter(Boolean);
-
-		const relevantPages = (typeof parser.parseDocument === 'function')
-			? parser.parseDocument(pagesForParser)
-			: pagesForParser; // si no existe parser, devolver todo
-
-
-		// 2. Extraer campos estructurados usando fieldExtractor, incluyendo timeSeconds
-		const extracted = relevantPages.map(page => {
-			if (typeof fieldExtractor.extractFieldsFromText === 'function') {
-				// Buscar el tiempo de análisis de la página
-				let timeSeconds = null;
-				// Buscar en ocrResults por pageNumber
-				const ocrResult = ocrResults[page.pageNumber - 1];
-				if (ocrResult && typeof ocrResult.timeSeconds === 'number') {
-					timeSeconds = ocrResult.timeSeconds;
-				}
-				// Extraer campos y añadir timeSeconds
-				const campos = fieldExtractor.extractFieldsFromText(page.text, page.pageNumber, idiomaInput);
-				return { ...campos, timeSeconds };
-			}
-			return { pageNumber: page.pageNumber, rawText: page.text };
-		});
-
-		logger.info(`[OCR] PDF procesado correctamente: ${pageCount} páginas, ${pdfSizeMB} MB, tiempo total: ${elapsedSeconds.toFixed(2)}s, páginas relevantes: ${extracted.length}`);
-		// Nuevo response con trazabilidad y estado global
-		const numEsperados = albaranesEsperadosValue;
-		const numExtraidos = extracted.length;
-		const numParciales = extracted.filter(x => x.statusError).length;
-
-		let statusErrorGlobal = false;
-		let mensajeGlobal = [];
-
-		if (typeof numEsperados === 'number' && numExtraidos < numEsperados) {
-			statusErrorGlobal = true;
-			mensajeGlobal.push(`Solo se reconocieron ${numExtraidos} de ${numEsperados} albaranes.`);
-		}
-		if (numParciales > 0) {
-			statusErrorGlobal = true;
-			mensajeGlobal.push(`${numParciales} albaranes parcialmente extraídos.`);
-		}
-
-		const response = {
-			paginasInput: pageCount,
-			albaranesExtraidos: numExtraidos,
-			datos: extracted,
-			paginasBlancas,
-			statusError: statusErrorGlobal,
-			mensaje: mensajeGlobal.join(' | ')
-		};
-		return res.json(response);
-	} catch (err) {
-		logger.error('[OCR] Error procesando PDF:', err);
-		if (err.message && err.message.includes('excede el límite de 60')) {
-			return res.status(400).json({ error: err.message });
-		}
-		return res.status(500).json({ error: err.message || 'Error processing PDF' });
-	} finally {
-		// Limpieza de recursos temporales
-		try {
-			if (Array.isArray(imagePaths) && imagePaths.length > 0 && typeof pdfService.cleanupTempImages === 'function') {
-				await pdfService.cleanupTempImages(outputDir);
-			} else if (fs.existsSync(outputDir)) {
-				// fallback: intentar eliminar archivos dentro de outputDir
-				fs.readdir(outputDir, (err, files) => {
-					if (!err && Array.isArray(files)) {
-						for (const file of files) {
-							try { fs.unlinkSync(path.join(outputDir, file)); } catch (e) { /* ignore */ }
-						}
-						try { fs.rmdirSync(outputDir); } catch (e) { /* ignore */ }
+					imagePaths = await pdfService.extractPagesAsImages(tempPdfPath, outputDir, pageCount);
+					for (let i = 0; i < imagePaths.length; i++) {
+						allImagePaths.push({ imagePath: imagePaths[i], pageNumber: i + 1 });
 					}
+				}
+
+				// Filtrar páginas casi blancas y quick-OCR
+				const paginasBlancas = [];
+				const imagenesValidas = [];
+				const quickOcrCache = {};
+				for (const { imagePath, pageNumber } of allImagePaths) {
+					if (!imagePath) { paginasBlancas.push(pageNumber); continue; }
+					let esBlanca = false;
+					try { esBlanca = await isImageBlank(imagePath); } catch (err) { logger.warn(`[BLANK DETECTION] Error analizando página ${pageNumber}: ${err.message}`); }
+					if (esBlanca) {
+						let keptByQuickOcr = false;
+						try {
+							const angle = await ocrService.detectOrientationWithOSD(imagePath);
+							let rotatedPath = imagePath;
+							let createdRotated = false;
+							if (angle !== null && angle !== 0) {
+								try { rotatedPath = await ocrService.rotateImage(imagePath, angle); createdRotated = true; } catch (rotateErr) { logger.warn(`[BLANK->QUICK OCR] No se pudo rotar página ${pageNumber}: ${rotateErr.message}`); rotatedPath = imagePath; }
+							}
+							try {
+								const quick = await ocrService.applyOcrToImage(rotatedPath, tesseractLang, false);
+								const text = (quick && quick.text) ? quick.text : '';
+								const cleaned = text.replace(/\s+/g, '');
+								const MIN_CHARS_FOR_KEEP = 30;
+								if (cleaned.length >= MIN_CHARS_FOR_KEEP) {
+									keptByQuickOcr = true;
+									quickOcrCache[pageNumber] = { text: quick.text, confidence: quick.confidence || 0, angle: angle || 0, osd: true };
+									imagenesValidas.push({ imagePath, pageNumber });
+									logger.info(`[BLANK->OCR] Página ${pageNumber} conservada por quick-OCR (${cleaned.length} chars). Resultado cacheado.`);
+								}
+							} catch (quickErr) { logger.warn(`[BLANK->QUICK OCR] Error OCR rápido página ${pageNumber}: ${quickErr.message}`); }
+							try { if (createdRotated && rotatedPath && fs.existsSync(rotatedPath)) fs.unlinkSync(rotatedPath); } catch (e) { }
+						} catch (err) { logger.warn(`[BLANK->QUICK OCR] Error en excepción quick-OCR para página ${pageNumber}: ${err.message}`); }
+
+						if (!keptByQuickOcr) {
+							paginasBlancas.push(pageNumber);
+							logger.info(`[BLANK] Página ${pageNumber} descartada por ser casi en blanco.`);
+							try { if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath); } catch (e) { }
+						}
+					} else {
+						imagenesValidas.push({ imagePath, pageNumber });
+					}
+				}
+				logger.info(`[QUICK-OCR CACHE] ${Object.keys(quickOcrCache).length} páginas con resultado cacheado para reutilización.`);
+
+				// Procesar imágenes válidas con OCR
+				const ocrResults = new Array(pageCount);
+				const tasks = [];
+				for (const { imagePath, pageNumber } of imagenesValidas) {
+					const i = pageNumber - 1;
+					const task = limit(async () => {
+						const startPage = process.hrtime();
+						const cachedQuickOcr = quickOcrCache[pageNumber] || null;
+						const ocrResult = await ocrService.processPageWithOcr(imagePath, tesseractLang, cachedQuickOcr);
+						const pageElapsed = process.hrtime(startPage);
+						const pageSeconds = pageElapsed[0] + pageElapsed[1] / 1e9;
+						pageProcessDuration.observe(pageSeconds);
+						if (ocrResult) {
+							ocrResults[i] = { pageNumber, text: ocrResult.text, confidence: ocrResult.confidence, angle: ocrResult.angle, osd: ocrResult.osd || false, timeSeconds: pageSeconds };
+						} else {
+							ocrResults[i] = null;
+						}
+						try { if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath); } catch (e) { }
+					});
+					tasks.push(task);
+				}
+				for (const pageNumber of paginasBlancas) ocrResults[pageNumber - 1] = null;
+				await Promise.all(tasks);
+
+				const elapsedTotal = process.hrtime(startTotal);
+				const elapsedSeconds = elapsedTotal[0] + elapsedTotal[1] / 1e9;
+				pdfProcessDuration.observe(elapsedSeconds);
+
+				const pagesForParser = ocrResults.map((r) => r ? { text: r.text, pageNumber: r.pageNumber } : null).filter(Boolean);
+				const relevantPages = (typeof parser.parseDocument === 'function') ? parser.parseDocument(pagesForParser) : pagesForParser;
+				const extracted = relevantPages.map(page => {
+					if (typeof fieldExtractor.extractFieldsFromText === 'function') {
+						let timeSeconds = null;
+						const ocrResult = ocrResults[page.pageNumber - 1];
+						if (ocrResult && typeof ocrResult.timeSeconds === 'number') timeSeconds = ocrResult.timeSeconds;
+						const campos = fieldExtractor.extractFieldsFromText(page.text, page.pageNumber, idiomaInput);
+						return { ...campos, timeSeconds };
+					}
+					return { pageNumber: page.pageNumber, rawText: page.text };
 				});
+
+				logger.info(`[OCR] PDF procesado correctamente: ${pageCount} páginas, ${pdfSizeMB} MB, tiempo total: ${elapsedSeconds.toFixed(2)}s, páginas relevantes: ${extracted.length}`);
+
+				const numEsperados = albaranesEsperadosValue;
+				const numExtraidos = extracted.length;
+				const numParciales = extracted.filter(x => x.statusError).length;
+				let statusErrorGlobal = false;
+				let mensajeGlobal = [];
+				if (typeof numEsperados === 'number' && numExtraidos < numEsperados) { statusErrorGlobal = true; mensajeGlobal.push(`Solo se reconocieron ${numExtraidos} de ${numEsperados} albaranes.`); }
+				if (numParciales > 0) { statusErrorGlobal = true; mensajeGlobal.push(`${numParciales} albaranes parcialmente extraídos.`); }
+
+				const callbackBody = {
+					paginasInput: pageCount,
+					albaranesExtraidos: numExtraidos,
+					datos: extracted,
+					paginasBlancas,
+					statusError: statusErrorGlobal,
+					mensaje: mensajeGlobal.join(' | ')
+				};
+
+				// Enviar callback a Bizagi
+				if (BIZAGI_BASE_URL && BIZAGI_TOKEN) {
+					const url = `${BIZAGI_BASE_URL.replace(/\/$/, '')}/odata/data/cases/${caseId}/events/EvtOCRCompletado/next`;
+					try {
+						await axios.post(url, callbackBody, { headers: { Authorization: `Bearer ${BIZAGI_TOKEN}`, 'Content-Type': 'application/json' }, timeout: 15000 });
+						logger.info(`[CALLBACK] Callback Bizagi OK para caseId=${caseId}`);
+						jobCallbackState.set(caseId, { callbackFailed: false });
+					} catch (cbErr) {
+						logger.error(`[CALLBACK] Error al notificar Bizagi para caseId=${caseId}: ${cbErr.message}`);
+						jobCallbackState.set(caseId, { callbackFailed: true, error: cbErr.message });
+						callbackFailedFlag = true;
+					}
+				} else {
+					logger.warn('[CALLBACK] BIZAGI_BASE_URL o BIZAGI_TOKEN no configurados. Saltando callback.');
+					jobCallbackState.set(caseId, { callbackFailed: true, error: 'missing-bizagi-config' });
+					callbackFailedFlag = true;
+				}
+
+			} catch (err) {
+				logger.error('[OCR] Error procesando PDF (job):', err);
+			} finally {
+				// Limpieza de recursos temporales
+				try {
+					if (typeof pdfService.cleanupTempImages === 'function') {
+						await pdfService.cleanupTempImages(outputDir);
+					} else if (fs.existsSync(outputDir)) {
+						const files = fs.readdirSync(outputDir || '');
+						for (const file of files) { try { fs.unlinkSync(path.join(outputDir, file)); } catch (e) { } }
+						try { fs.rmdirSync(outputDir); } catch (e) { }
+					}
+				} catch (cleanupErr) { logger.error('[CLEANUP] Error al limpiar imágenes temporales:', cleanupErr); }
+				try { if (fs.existsSync(tempPdfPath)) fs.unlinkSync(tempPdfPath); } catch (cleanupErr) { logger.error('[CLEANUP] Error al eliminar PDF temporal:', cleanupErr); }
+				try { if (fs.existsSync(tempDir)) fs.rmdirSync(tempDir); } catch (e) { }
 			}
-		} catch (cleanupErr) {
-			logger.error('[CLEANUP] Error al limpiar imágenes temporales:', cleanupErr);
-		}
-		try {
-			if (fs.existsSync(tempPdfPath)) fs.unlinkSync(tempPdfPath);
-		} catch (cleanupErr) {
-			logger.error('[CLEANUP] Error al eliminar PDF temporal:', cleanupErr);
-		}
-	}
+	})();
+
+	// Responder inmediatamente indicando que el job fue encolado
+	return res.status(200).json({ status: 'queued', caseId: Number(caseId) });
 });
 
-// ---------- Endpoint de salud ----------
-app.get('/health', async (req, res) => {
-	// Verificar Tesseract
-	const tesseractOk = await new Promise(resolve => {
-		const { spawn } = require('child_process');
-		const proc = spawn('tesseract', ['--version']);
-		proc.on('error', () => resolve(false));
-		proc.on('close', code => resolve(code === 0));
-	});
-
-	// Verificar Poppler (pdftocairo)
-	const popplerOk = await new Promise(resolve => {
-		const { spawn } = require('child_process');
-		// -v no siempre devuelve 0 en pdftocairo; simplemente comprobar existencia ejecutable
-		const proc = spawn('pdftocairo', ['-v']);
-		proc.on('error', () => resolve(false));
-		proc.on('close', code => {
-			// pdftocairo suele enviar salida por stderr y cerrar con 0; considerar 0 como OK
-			resolve(code === 0);
-		});
-	});
-
-	// Verificar memoria libre (indicador simple)
-	let diskOk = false;
-	try {
-		const freeMB = os.freemem() / (1024 * 1024);
-		diskOk = freeMB > 100; // >100MB
-	} catch (e) {
-		diskOk = false;
-	}
-
-	res.json({
-		tesseract: tesseractOk,
-		poppler: popplerOk,
-		diskSpaceOK: diskOk
-	});
-});
+// end of /api/process-pdf handler
 
 // ---------- Log de concurrencia y DPI ----------
 const OCR_CONCURRENCY = process.env.OCR_CONCURRENCY ? String(process.env.OCR_CONCURRENCY) : require('./concurrency').DEFAULT_CONCURRENCY;

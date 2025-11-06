@@ -27,31 +27,23 @@ Envías un PDF en base64, el servicio filtra páginas relevantes (las que tienen
 {
   "pdfBase64": "...base64...",
   "idioma": "ESP",
-  "albaranesEsperados": 8
+  "albaranesEsperados": 8,
+  "caseId": 12345
 }
 ```
 
-**Response:**
+**Immediate response (queued):**
+
+After the request is accepted the service enqueues the OCR job and returns immediately with a minimal response. The OCR runs asynchronously in background and the service will callback Bizagi (see below) when finished.
 
 ```json
 {
-  "paginasInput": 10,
-  "albaranesExtraidos": 7,
-  "statusError": true,
-  "mensaje": "Solo se reconocieron 7 de 8 albaranes. | 2 albaranes parcialmente extraídos.",
-  "datos": [
-    {
-      "pag": 5,
-      "departamento": "96",
-      "numeroOrden": "1900942645",
-      "numeroRecibo": "211306",
-      "total": null,
-      "statusError": false,
-      "mensaje": ""
-    }
-  ]
+  "status": "queued",
+  "caseId": 12345
 }
 ```
+
+The final OCR result is delivered to Bizagi with a POST to the configured callback URL (see "Bizagi callback" below). The older synchronous response (full extraction in the request) is no longer returned by /api/process-pdf.
 
 Cada entrada en `datos` tiene `statusError: true` si le faltó algún campo clave.
 
@@ -65,13 +57,22 @@ Métricas de Prometheus (requests, errores, tiempos, recursos).
 
 ## Variables de entorno
 
-```
+```bash
 PORT=3000
 OCR_CONCURRENCY=5
 HTTP_TIMEOUT_MS=600000
 RATE_LIMIT_WINDOW_MS=900000
 RATE_LIMIT_MAX=100
 ```
+
+Additionally, to enable Bizagi callbacks you must set:
+
+```bash
+BIZAGI_BASE_URL=https://your-bizagi.example.com
+BIZAGI_TOKEN=<<your-bearer-token>>
+```
+
+If `BIZAGI_BASE_URL` or `BIZAGI_TOKEN` are not set the service will still process PDFs but will skip the callback and log a warning.
 
 `OCR_CONCURRENCY` controla cuántas páginas se procesan en paralelo. Ajústalo según tu servidor: con 2 vCPU pon 2-3, con 4 vCPU prueba 5-6.
 
