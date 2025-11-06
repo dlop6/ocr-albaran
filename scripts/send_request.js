@@ -96,14 +96,18 @@ function prompt(question) {
     albaranesEsperados = undefined;
   }
 
+  // Generate random caseId
+  const caseId = Math.floor(Math.random() * 1000000) + 1;
+
   const payload = {
     pdfBase64,
-    idioma: idiomaInput
+    idioma: idiomaInput,
+    caseId
   };
   if (typeof albaranesEsperados === 'number') payload.albaranesEsperados = albaranesEsperados;
 
   const endpoint = 'http://localhost:3000/api/process-pdf';
-  console.log(`Sending request to ${endpoint} for PDF: ${pdfFilename}`);
+  console.log(`Sending request to ${endpoint} for PDF: ${pdfFilename} (caseId: ${caseId})`);
 
   try {
     const resp = await axios.post(endpoint, payload, { timeout: 0, maxContentLength: Infinity, maxBodyLength: Infinity });
