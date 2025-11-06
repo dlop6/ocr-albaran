@@ -166,16 +166,28 @@ async function processPageWithOcr(imagePath, lang = "spa", quickOcrResult = null
         };
     }
 
-    // PASO 2: OSD no validó → Fallback inteligente
+    // PASO 2: OSD no validó → Fallback inteligente con early exit
     logger.warn(`[OSD INVALID] Ángulo ${angle}° no validó keywords. Iniciando fallback...`);
-    
+
+    // early exit: si el texto es muy corto o baja confianza, abandonar página
+    const cleanedText = osdResult.text.replace(/\s+/g, '');
+    if (cleanedText.length < 50 && osdResult.confidence < 40) {
+        logger.info(`[EARLY EXIT] Página con poco contenido (${cleanedText.length} chars, ${osdResult.confidence}% conf). Abandonando fallback.`);
+        return {
+            text: osdResult.text,
+            confidence: osdResult.confidence,
+            angle: angle || 0,
+            osd: true
+        };
+    }
+
     const triedAngles = [angle];
     const fallbackAngles = [0, 90, 180, 270].filter(a => !triedAngles.includes(a));
-    
+
     for (const fallbackAngle of fallbackAngles) {
         let fallbackPath = imagePath;
         let createdFallback = false;
-        
+
         if (fallbackAngle !== 0) {
             try {
                 fallbackPath = await rotateImage(imagePath, fallbackAngle);
@@ -187,12 +199,12 @@ async function processPageWithOcr(imagePath, lang = "spa", quickOcrResult = null
         }
 
         const fallbackResult = await applyOcrToImage(fallbackPath, lang, false);
-        
+
         // Limpiar imagen rotada temporal inmediatamente
         if (createdFallback && fallbackPath && fs.existsSync(fallbackPath)) {
-            try { 
-                fs.unlinkSync(fallbackPath); 
-            } catch (e) { 
+            try {
+                fs.unlinkSync(fallbackPath);
+            } catch (e) {
                 logger.warn(`[CLEANUP] Error eliminando ${fallbackPath}: ${e.message}`);
             }
         }
@@ -207,7 +219,7 @@ async function processPageWithOcr(imagePath, lang = "spa", quickOcrResult = null
                 osd: false
             };
         }
-        
+
         logger.info(`[FALLBACK] Ángulo ${fallbackAngle}° no validó keywords, probando siguiente...`);
     }
 
