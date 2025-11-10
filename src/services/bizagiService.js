@@ -92,7 +92,8 @@ async function sendCallback(caseId, data) {
 				'Authorization': `Bearer ${config.BIZAGI_TOKEN}`,
 				'Content-Type': 'application/json'
 			},
-			timeout: 15000
+			timeout: 15000,
+			httpsAgent: new (require('https').Agent)({ rejectUnauthorized: false })
 		});
 		
 		logger.info(`[CALLBACK] Callback Bizagi OK para caseId=${caseId}`);
