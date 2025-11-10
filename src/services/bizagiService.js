@@ -8,37 +8,37 @@ const jobCallbackState = new Map();
 
 // Transformar datos del OCR al formato Bizagi con startParameters y xpath
 function transformToBizagiFormat(data) {
-	const { paginasInput, albaranesExtraidos, datos, paginasBlancas, statusError, mensaje } = data;
+	const { paginasInput, albaranesExtraidos, datos, statusError, mensaje } = data;
 
-	// Construir colección de albaranes (rows)
+	// Construir colección de albaranes (rows) sin el prefijo en xpath (solo nombre de campo)
 	const rows = datos.map(albaran => ({
 		columns: [
 			{
-				xpath: "m_CFEL_Albaranes.iPagina",
+				xpath: "iPagina",
 				value: albaran.pag || albaran.pageNumber
 			},
 			{
-				xpath: "m_CFEL_Albaranes.sDepartamento",
+				xpath: "sDepartamento",
 				value: albaran.departamento || ""
 			},
 			{
-				xpath: "m_CFEL_Albaranes.sOrdenCompra",
+				xpath: "sOrdenCompra",
 				value: albaran.numeroOrden || ""
 			},
 			{
-				xpath: "m_CFEL_Albaranes.sRecibo",
+				xpath: "sRecibo",
 				value: albaran.numeroRecibo || ""
 			},
 			{
-				xpath: "m_CFEL_Albaranes.bStatusError",
+				xpath: "bStatusError",
 				value: albaran.statusError || false
 			},
 			{
-				xpath: "m_CFEL_Albaranes.sMensaje",
+				xpath: "sMensaje",
 				value: albaran.mensaje || ""
 			},
 			{
-				xpath: "m_CFEL_Albaranes.sTotal",
+				xpath: "sTotal",
 				value: albaran.total || null
 			}
 		]
@@ -47,7 +47,7 @@ function transformToBizagiFormat(data) {
 	// Construir estructura completa de startParameters
 	const startParameters = [
 		{
-			xpath: "m_CFEL_CobroFacturas.Datos",
+			xpath: "m_CFEL_CobroFacturas.xAlbaranes",
 			type: "collection",
 			rows: rows
 		},
@@ -64,7 +64,7 @@ function transformToBizagiFormat(data) {
 			value: statusError
 		},
 		{
-			xpath: "m_CFEL_CobroFacturas.sMensaje",
+			xpath: "m_CFEL_CobroFacturas.sMensajeError",
 			value: mensaje || ""
 		}
 	];
