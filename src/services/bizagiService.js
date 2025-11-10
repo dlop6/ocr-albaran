@@ -81,7 +81,7 @@ async function sendCallback(caseId, data) {
 		return { success: false, error };
 	}
 
-	const url = `${config.BIZAGI_BASE_URL.replace(/\/$/, '')}/odata/data/cases/${caseId}/events/EvtOCRCompletado/next`;
+	const url = `${config.BIZAGI_BASE_URL.replace(/\/$/, '')}/odata/data/cases(${caseId})/events(EvtCompletadoOCR)/next`;
 	
 	// Transformar datos al formato Bizagi
 	const bizagiPayload = transformToBizagiFormat(data);
