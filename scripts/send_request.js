@@ -19,7 +19,7 @@ const readline = require('readline');
 function usageAndExit(code = 1) {
   console.error('\nUsage: node scripts/send_request.js [PDF_FILENAME] [IDIOMA] [ALBARANES_ESPERADOS]');
   console.error('  If PDF_FILENAME is omitted, script lists all PDFs in docs/ and prompts for selection.');
-  console.error('  IDIOMA must be ESP or ING');
+  console.error("  IDIOMA must be 'es' or 'en' (ISO 639), or 'ESP'/'ING' for compatibility");
   console.error('  ALBARANES_ESPERADOS is optional integer >= 0');
   process.exit(code);
 }
@@ -71,13 +71,17 @@ function prompt(question) {
   // Idioma
   let idiomaInput = argv[1];
   if (!idiomaInput) {
-    idiomaInput = await prompt('Enter idioma (ESP or ING): ');
+    idiomaInput = await prompt("Enter idioma (es or en, default 'es'): ");
   }
-  idiomaInput = String(idiomaInput).trim().toUpperCase();
-  if (!['ESP', 'ING'].includes(idiomaInput)) {
-    console.error(`Error: idioma must be 'ESP' or 'ING'. Received: ${idiomaInput}`);
+  idiomaInput = String(idiomaInput).trim();
+  // Accept ISO codes (es/en) or legacy ESP/ING
+  const normLang = idiomaInput ? idiomaInput.toLowerCase() : 'es';
+  if (!['es','en','esp','ing','spa','eng'].includes(normLang)) {
+    console.error(`Error: idioma must be 'es' or 'en' (or ESP/ING). Received: ${idiomaInput}`);
     process.exit(4);
   }
+  // Normalize to ISO lowercase for the payload
+  idiomaInput = (['en','eng','ing'].includes(normLang)) ? 'en' : 'es';
 
   // albaranesEsperados
   let albaranesEsperados = argv[2];

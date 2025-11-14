@@ -11,7 +11,7 @@ const logger = require('../src/logger');
 const PDF_PATH = path.resolve(__dirname, '../docs/EJEMPLO 3.pdf');
 const PAGE_NUMBER = 16; // 1-based
 const DPI = process.env.OCR_DPI || '300';
-const IDIOMA = process.env.TEST_IDIOMA || 'ESP'; // 'ESP' o 'ING'
+const IDIOMA = process.env.TEST_IDIOMA || 'es'; // ISO 639: 'es' o 'en' (acepta 'ESP'/'ING' por compat)
 const PREPROC = process.env.TEST_PREPROC === 'true'; // true/false
 
 const tempDir = path.join(__dirname, 'temp_test');
@@ -59,8 +59,9 @@ async function main() {
         return;
     }
     // Ejecutar OCR y extracción de campos
-    // Mapear idioma de entrada ('ESP'|'ING') a códigos de Tesseract ('spa'|'eng')
-    const tesseractLang = (IDIOMA && IDIOMA.toUpperCase() === 'ING') ? 'eng' : 'spa';
+    // Mapear idioma de entrada (ISO) a código de Tesseract ('spa'|'eng')
+    const t = (IDIOMA && String(IDIOMA).toLowerCase());
+    const tesseractLang = (['en','eng','ing'].includes(t)) ? 'eng' : 'spa';
     let ocrResult;
     // Usar la función existente applyOcrToImage (usa tesseract.js internamente)
     ocrResult = await ocrService.applyOcrToImage(imgPath, tesseractLang, false);

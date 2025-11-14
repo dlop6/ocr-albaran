@@ -26,7 +26,7 @@ Envías un PDF en base64, el servicio filtra páginas relevantes (las que tienen
 ```json
 {
   "pdfBase64": "...base64...",
-  "idioma": "ESP",
+  "idioma": "es",
   "albaranesEsperados": 8,
   "caseId": 12345
 }

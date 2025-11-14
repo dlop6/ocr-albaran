@@ -8,10 +8,19 @@ const path = require('path');
  * Extrae campos clave de una página OCR y devuelve objeto estructurado
  * @param {string} text - Texto OCR de la página
  * @param {number} pag - Número de página (1-based)
- * @param {string} idioma - 'ESP' o 'ING'
+ * @param {string} idioma - ISO 639 code: 'es' or 'en' (also accepts 'ESP','ING','spa','eng' for compatibility)
  * @returns {object} Objeto con los campos extraídos y estado de error
  */
-function extractFieldsFromText(text, pag, idioma = 'ESP') {
+function extractFieldsFromText(text, pag, idioma = 'es') {
+    function normalizeLang(l) {
+        if (!l) return 'es';
+        const s = String(l).toLowerCase();
+        if (['es', 'spa', 'esp', 'es-es'].includes(s)) return 'es';
+        if (['en', 'eng', 'ing', 'en-us'].includes(s)) return 'en';
+        return 'es';
+    }
+    const norm = normalizeLang(idioma);
+    const isSpanish = norm === 'es';
     // Inicializar variables de salida
     let numeroOrden = "";
     let numeroRecibo = "";
@@ -32,12 +41,12 @@ function extractFieldsFromText(text, pag, idioma = 'ESP') {
     // Patrones robustos para cada campo, según idioma
     let patterns;
     let mensajesError = {
-        numeroOrden: idioma === 'ESP' ? 'No se encontró Número de Orden' : 'PO Number not found',
-        numeroRecibo: idioma === 'ESP' ? 'No se encontró Recibo' : 'Receiver not found',
-        departamento: idioma === 'ESP' ? 'No se encontró Departamento' : 'Department not found',
-        total: idioma === 'ESP' ? 'No se encontró Total' : 'Total not found'
+        numeroOrden: isSpanish ? 'No se encontró Número de Orden' : 'PO Number not found',
+        numeroRecibo: isSpanish ? 'No se encontró Recibo' : 'Receiver not found',
+        departamento: isSpanish ? 'No se encontró Departamento' : 'Department not found',
+        total: isSpanish ? 'No se encontró Total' : 'Total not found'
     };
-    if (idioma === 'ESP') {
+    if (isSpanish) {
         patterns = {
             numeroOrden: [
             /P\.O[:\s]*(\d{8,12})/i,
@@ -91,7 +100,7 @@ function extractFieldsFromText(text, pag, idioma = 'ESP') {
     }
     
     
-    if (idioma === 'ESP') {
+    if (isSpanish) {
         let totalEncontrado = false;
         const lineas = cleanText.split(/\r?\n/);
         for (const linea of lineas) {
@@ -133,7 +142,7 @@ function extractFieldsFromText(text, pag, idioma = 'ESP') {
             }
         }
     } else {
-        // ING: no buscar ni reportar total
+        // ING/en: no buscar ni reportar total
         total = 0;
     }
 
@@ -206,7 +215,7 @@ function extractFieldsFromText(text, pag, idioma = 'ESP') {
         }
     }
 
-    // Solo incluir 'total' si idioma es ESP
+    // Solo incluir 'total' si idioma es español (ISO 'es')
     const result = {
         pag,
         departamento,
@@ -215,7 +224,7 @@ function extractFieldsFromText(text, pag, idioma = 'ESP') {
         statusError,
         mensaje: mensajes.join("|")
     };
-    if (idioma === 'ESP') {
+    if (isSpanish) {
         let totalNum = (typeof total === 'number' && !isNaN(total)) ? Number(total.toFixed(2)) : 0;
         result.total = totalNum;
     }

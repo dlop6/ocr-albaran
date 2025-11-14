@@ -86,10 +86,11 @@ function parsePageSelection(input, max) {
   const numbersOnlyAns = await prompt('Numbers-only OCR? (yes/no, default no): ');
   const numbersOnly = numbersOnlyAns.trim().toLowerCase().startsWith('y');
 
-  console.log('\nIdioma (ESP or ING) affects tesseract language model.');
-  const idiomaAns = await prompt('Idioma (ESP/ING, default ESP): ');
-  const idioma = (idiomaAns.trim() ? idiomaAns.trim().toUpperCase() : 'ESP');
-  const tesseractLang = idioma === 'ESP' ? 'spa' : 'eng';
+  console.log('\nIdioma affects tesseract language model. Use ISO codes (es/en) or ESP/ING for compatibility.');
+  const idiomaAns = await prompt("Idioma (es/en, default 'es'): ");
+  const idiomaRaw = (idiomaAns.trim() ? idiomaAns.trim() : 'es');
+  const idioma = String(idiomaRaw).toLowerCase();
+  const tesseractLang = (['en','eng','ing'].includes(idioma)) ? 'eng' : 'spa';
 
   const pageSelAns = await prompt('Pages to analyze (e.g. 1,3,5-7 or all): ');
   const desiredPages = parsePageSelection(pageSelAns || 'all', pageCount);

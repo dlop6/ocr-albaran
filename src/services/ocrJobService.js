@@ -27,8 +27,17 @@ async function processOcrJob(pdfBase64, idioma, albaranesEsperados, caseId) {
 		fs.writeFileSync(tempPdfPath, Buffer.from(pdfBase64, 'base64'));
 		const pdfBuffer = fs.readFileSync(tempPdfPath);
 
-		// Mapear idioma a código de Tesseract
-		const tesseractLang = idioma === 'ESP' ? 'spa' : 'eng';
+		// Normalizar idioma de entrada (acepta 'es','en','ESP','ING','spa','eng' etc.)
+		function normalizeLang(l) {
+			if (!l) return 'es';
+			const s = String(l).toLowerCase();
+			if (['es', 'spa', 'esp', 'es-es'].includes(s)) return 'es';
+			if (['en', 'eng', 'ing', 'en-us'].includes(s)) return 'en';
+			return 'es';
+		}
+		const normalizedLang = normalizeLang(idioma);
+		// Mapear a código de Tesseract ('spa'|'eng')
+		const tesseractLang = (normalizedLang === 'en') ? 'eng' : 'spa';
 
 		// Validar PDF
 		if (typeof pdfService.validatePdf === 'function') {
@@ -71,7 +80,7 @@ async function processOcrJob(pdfBase64, idioma, albaranesEsperados, caseId) {
 		pdfProcessDuration.observe(elapsedSeconds);
 
 		// Parsear y extraer campos
-		const extracted = extractFields(ocrResults, idioma);
+		const extracted = extractFields(ocrResults, normalizedLang);
 
 		logger.info(
 			`[OCR] PDF procesado correctamente: ${pageCount} páginas, ${pdfSizeMB} MB, ` +
